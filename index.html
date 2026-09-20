@@ -1,41 +1,77 @@
-document.getElementById("studioContent").value="";
-document.getElementById("studioSections").innerHTML=a.length?a.map((x,i)=>'<div class="studio-section"><strong>'+(i+1)+'. '+x.title+'</strong><div class="muted" style="margin-top:5px">'+escapeHtml(x.content.slice(0,220))+(x.content.length>220?"…":"")+'</div></div>').join(""):"<p class='muted'>No sections saved yet.</p>";
-}
-function escapeHtml(s){return s.replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
-function saveStudioSection(){
-let s=document.getElementById("studioBook"),b=books[Number(s.value||0)],t=document.getElementById("studioChapter").value.trim(),x=document.getElementById("studioContent").value.trim();
-if(!t||!x){showToast("Add a section title and content");return}
-let d=studioData();d[b.title]=d[b.title]||[];d[b.title].push({title:t,content:x});saveStudioData(d);clearStudioDraft();loadStudioBook();showToast("Section saved");
-}
-function clearStudioDraft(){document.getElementById("studioChapter").value="";document.getElementById("studioContent").value=""}
-function generateOutline(){
-let s=document.getElementById("studioBook"),b=books[Number(s.value||0)];
-let m={
-"AI / Tech Guides":["Introduction and Goals","Core Concepts","Practical Workflow","Tools and Techniques","Real-World Examples","Best Practices","Troubleshooting","Conclusion"],
-"Education / Workbooks":["Learning Objectives","Warm-Up","Core Lesson","Guided Practice","Independent Practice","Review","Answer Key"],
-"Vedic Astrology & Gemstones":["Introduction","Foundations","Methods and Principles","Interpretation Framework","Practical Examples","Remedies and Applications","Conclusion"],
-"Mythology / Fiction":["Opening","Setting and Characters","Inciting Event","Rising Action","Climax","Resolution","Epilogue"],
-"Personal Finance":["Introduction","Financial Foundations","Budgeting","Saving and Investing","Risk Management","Practical Plan","Conclusion"],
-"Ancient Mysteries":["Introduction","Historical Context","Evidence","Competing Interpretations","Case Studies","Open Questions","Conclusion"]
-};
-let a=m[b.category]||["Introduction","Foundations","Main Development","Practical Examples","Conclusion"];
-document.getElementById("studioChapter").value=a[0];
-document.getElementById("studioContent").value=a.map((x,i)=>(i+1)+". "+x).join("\n");
-showToast("Outline prepared — expand each section into full content");
-}
-function exportManuscript(){
-let s=document.getElementById("studioBook"),b=books[Number(s.value||0)],a=(studioData()[b.title]||[]);
-if(!a.length){showToast("Save at least one section first");return}
-let t=[b.title,"=".repeat(b.title.length),"",b.description||"",...a.flatMap(x=>["",x.title,"-".repeat(x.title.length),"",x.content])].join("\n");
-let u=URL.createObjectURL(new Blob([t],{type:"text/plain;charset=utf-8"})),z=document.createElement("a");z.href=u;z.download=b.title.replace(/[^a-z0-9]+/gi,"-").toLowerCase()+"-manuscript.txt";z.click();URL.revokeObjectURL(u);showToast("Manuscript exported");
-}
-function exportData(){
-let u=URL.createObjectURL(new Blob([JSON.stringify({books,studio:studioData()},null,2)],{type:"application/json"})),a=document.createElement("a");a.href=u;a.download="book-factory-backup.json";a.click();URL.revokeObjectURL(u);
-}
-function resetDemo(){if(confirm("Reset Book Factory demo data?")){books=seedBooks.map(x=>({...x}));localStorage.removeItem("bookFactoryStudio");saveBooks();showToast("Demo data restored")}}
-function showToast(m){let t=document.getElementById("toast");t.textContent=m;t.style.display="block";setTimeout(()=>t.style.display="none",2200)}
-function renderAll(){renderDashboard();renderLedger();renderPublishing();renderAnalytics();renderStudio()}
-renderAll();
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Book Factory — Phase 46</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Arial;background:#0b1020;color:#e8ecf7}
+.app{display:flex;min-height:100vh}.side{width:250px;background:#11182d;border-right:1px solid #26304b;padding:18px}
+.logo{font-size:22px;font-weight:800;margin-bottom:24px}.logo span{font-size:11px;background:#25345e;padding:4px 7px;border-radius:8px;margin-left:5px}
+nav button{display:block;width:100%;text-align:left;background:transparent;color:#aeb9d4;border:0;padding:11px 12px;border-radius:9px;margin:3px 0;font-size:14px;cursor:pointer}
+nav button.active,nav button:hover{background:#1c2948;color:#fff}.main{flex:1;padding:24px;max-width:1500px}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}.status{display:flex;gap:8px;align-items:center;color:#aeb9d4;font-size:13px}.dot{width:8px;height:8px;background:#41d98a;border-radius:50%}
+h1{margin:0;font-size:28px}.muted{color:#8e9ab8}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.card{background:#121a30;border:1px solid #273252;border-radius:14px;padding:18px}.metric{font-size:28px;font-weight:800;margin-top:8px}.label{font-size:12px;color:#8996b6;text-transform:uppercase;letter-spacing:.08em}
+.section{margin-top:18px}.section h2{font-size:17px}.table{width:100%;border-collapse:collapse}.table th,.table td{text-align:left;padding:12px;border-bottom:1px solid #26304b;font-size:13px}.table th{color:#8290b0}.pill{padding:4px 8px;border-radius:999px;background:#202c4d;font-size:11px}.ok{background:#143b2b;color:#73e6ad}.warn{background:#49371a;color:#ffd27d}
+.progress{height:8px;background:#202944;border-radius:8px;overflow:hidden}.progress i{display:block;height:100%;background:#6d8cff}.flow{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.step{padding:12px;border:1px solid #293555;border-radius:10px;text-align:center;font-size:11px;color:#aab6d2}.step.done{border-color:#2e9c6a;color:#78e0ae;background:#10271e}.actions{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid #3a4a76;background:#1b2745;color:#fff;padding:9px 12px;border-radius:9px;cursor:pointer}.btn.primary{background:#526dff;border-color:#526dff}
+.page{display:none}.page.active{display:block}
+@media(max-width:900px){.side{width:190px}.grid{grid-template-columns:repeat(2,1fr)}.flow{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:600px){.app{display:block}.side{width:100%;border-right:0}.grid{grid-template-columns:1fr}.flow{grid-template-columns:1fr 1fr}.main{padding:15px}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside class="side">
+<div class="logo">Book Factory <span>PHASE 46</span></div>
+<nav id="nav">
+<button class="active" data-page="dashboard">◈ Command Center</button>
+<button data-page="library">▣ Master Library</button>
+<button data-page="production">⚙ Production Queue</button>
+<button data-page="scheduler">◷ Scheduler</button>
+<button data-page="blueprints">◇ Blueprints</button>
+<button data-page="memory">♢ Continuity Memory</button>
+<button data-page="publishing">⇧ Publishing Center</button>
+<button data-page="analytics">▥ Analytics</button>
+</nav>
+</aside>
+<main class="main">
+<div class="top"><div><h1 id="title">Publisher Command Center</h1><div class="muted">Autonomous publishing operations</div></div><div class="status"><i class="dot"></i> System operational</div></div>
+
+<section id="dashboard" class="page active">
+<div class="grid">
+<div class="card"><div class="label">Active Books</div><div class="metric">10</div><div class="muted">Publishers Ledger</div></div>
+<div class="card"><div class="label">Production Jobs</div><div class="metric">24</div><div class="muted">6 running · 18 queued</div></div>
+<div class="card"><div class="label">Scheduled</div><div class="metric">12</div><div class="muted">Next run 22:00 IST</div></div>
+<div class="card"><div class="label">QA Blockers</div><div class="metric">2</div><div class="muted">Needs review</div></div>
+</div>
+<div class="section card"><h2>Autonomous Production Pipeline</h2>
+<div class="flow">
+<div class="step done">Schedule</div><div class="step done">Orchestrator</div><div class="step done">Blueprint</div><div class="step done">Research</div><div class="step">Chapters</div><div class="step">QA</div>
+</div></div>
+<div class="section card"><h2>Operations</h2><div class="actions">
+<button class="btn primary" onclick="alert('Production run queued')">Run Production</button>
+<button class="btn" onclick="alert('Blueprint created')">Create Blueprint</button>
+<button class="btn" onclick="alert('Release review opened')">Release Review</button>
+<button class="btn" onclick="alert('Daily report generated')">Daily Report</button>
+</div></div>
+<div class="section card"><h2>Recent Jobs</h2><table class="table"><tr><th>Book</th><th>Stage</th><th>Progress</th><th>Status</th></tr>
+<tr><td>Ratna Vigyan</td><td>Editing</td><td><div class="progress"><i style="width:78%"></i></div></td><td><span class="pill ok">RUNNING</span></td></tr>
+<tr><td>ChatGPT Mastery</td><td>Blueprint</td><td><div class="progress"><i style="width:42%"></i></div></td><td><span class="pill ok">RUNNING</span></td></tr>
+<tr><td>Stone Sky Gods</td><td>QA</td><td><div class="progress"><i style="width:96%"></i></div></td><td><span class="pill warn">REVIEW</span></td></tr>
+</table></div>
+</section>
+
+<section id="library" class="page"><div class="card"><h2>Master Library</h2><table class="table" id="books"></table></div></section>
+<section id="production" class="page"><div class="card"><h2>Production Queue</h2><p class="muted">Schedule → Orchestrator → Blueprint → Research → Outline → Chapters → Editing → Fact Check → QA → Packaging → Publishing</p><table class="table"><tr><th>Queue</th><th>Priority</th><th>Engine</th><th>Status</th></tr><tr><td>Common Core Math Series</td><td>High</td><td>Autonomous</td><td><span class="pill ok">QUEUED</span></td></tr><tr><td>The Untold Ravana</td><td>Normal</td><td>Autonomous</td><td><span class="pill ok">RUNNING</span></td></tr></table></div></section>
+<section id="scheduler" class="page"><div class="card"><h2>Smart Scheduler</h2><p>Autonomous Cron: <b>ON</b></p><p>Schedule Manager: <b>ON</b></p><p>Schedule Orchestrator: <b>ON</b></p><button class="btn primary" onclick="alert('Schedule saved')">Save Schedule</button></div></section>
+<section id="blueprints" class="page"><div class="card"><h2>Blueprint Engine</h2><p class="muted">Genre templates, presets, production rules and blueprint-to-queue routing.</p><button class="btn primary" onclick="alert('Blueprint generated and queued')">Generate Blueprint</button></div></section>
+<section id="memory" class="page"><div class="grid"><div class="card"><div class="label">Continuity Memory</div><div class="metric">128</div><div class="muted">facts tracked</div></div><div class="card"><div class="label">Series Bible</div><div class="metric">7</div><div class="muted">active series</div></div><div class="card"><div class="label">Cross-Book Links</div><div class="metric">54</div><div class="muted">relationships</div></div><div class="card"><div class="label">Auto Extraction</div><div class="metric">ON</div><div class="muted">memory extractor</div></div></div></section>
+<section id="publishing" class="page"><div class="card"><h2>Publishing Center</h2><table class="table"><tr><th>Package</th><th>EPUB</th><th>PDF</th><th>ZIP</th><th>Validator</th></tr><tr><td>Ratna Vigyan v1</td><td>READY</td><td>READY</td><td>READY</td><td><span class="pill ok">PASS</span></td></tr></table></div></section>
+<section id="analytics" class="page"><div class="grid"><div class="card"><div class="label">Revenue</div><div class="metric">$0</div><div class="muted">Integration pending</div></div><div class="card"><div class="label">Costs</div><div class="metric">$0</div><div class="muted">Tracking enabled</div></div><div class="card"><div class="label">Break-even</div><div class="metric">—</div><div class="muted">Needs live sales data</div></div><div class="card"><div class="label">Portfolio</div><div class="metric">10</div><div class="muted">products tracked</div></div></div></section>
+</main></div>
+<script>
+const books=['Ratna Vigyan','The Living Vedic Astrology','Tarapatti','The Vikramaditya Code','The Untold Ravana','Stone Sky Gods','Common Core Math Series','Claude Mastery','ChatGPT Mastery','One Dashboard to Rule Them All'];
+document.getElementById('books').innerHTML='<tr><th>Title</th><th>Category</th><th>Production</th><th>Publishing</th></tr>'+books.map((b,i)=>`<tr><td>${b}</td><td>${['Astrology','Astrology','Astrology','Astrology','Mythology','Mystery','Education','AI/Tech','AI/Tech','Finance'][i]}</td><td><span class="pill ok">TRACKED</span></td><td>${i<3?'READY':'PIPELINE'}</td></tr>`).join('');
+document.querySelectorAll('#nav button').forEach(btn=>btn.onclick=()=>{document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.getElementById(btn.dataset.page).classList.add('active');document.querySelectorAll('#nav button').forEach(b=>b.classList.remove('active'));btn.classList.add('active');document.getElementById('title').textContent=btn.textContent.replace(/^[^ ]+ /,'')});
 </script>
-</body>
-</html>
+</body></html>
