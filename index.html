@@ -1,12 +1,1442 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Book Factory</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Book Factory</title>
+
+<style>
+*{box-sizing:border-box}
+
+body{
+  margin:0;
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  background:#f4f7fb;
+  color:#172033
+}
+
+.app{
+  display:flex;
+  min-height:100vh
+}
+
+.sidebar{
+  width:230px;
+  background:#111827;
+  color:#dbe5f1;
+  padding:20px 14px
+}
+
+.brand{
+  font-size:22px;
+  font-weight:800;
+  color:white;
+  padding:8px 10px 25px
+}
+
+.brand b{
+  color:#60a5fa
+}
+
+.nav button{
+  display:block;
+  width:100%;
+  border:0;
+  background:none;
+  color:#b8c3d4;
+  text-align:left;
+  padding:12px;
+  border-radius:9px;
+  margin:3px 0;
+  font-size:15px
+}
+
+.nav button.active,
+.nav button:hover{
+  background:#243044;
+  color:#fff
+}
+
+main{
+  flex:1;
+  padding:28px;
+  max-width:1400px
+}
+
+.top{
+  display:flex;
+  justify-content:space-between;
+  gap:15px;
+  align-items:center;
+  margin-bottom:22px
+}
+
+h1{
+  margin:0;
+  font-size:28px
+}
+
+h2{
+  margin-top:0
+}
+
+.muted{
+  color:#667085
+}
+
+.btn{
+  border:1px solid #d7dee8;
+  background:#fff;
+  border-radius:9px;
+  padding:10px 15px;
+  cursor:pointer
+}
+
+.primary{
+  background:#2563eb;
+  color:white;
+  border-color:#2563eb
+}
+
+.cards{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:15px
+}
+
+.card,
+.panel{
+  background:#fff;
+  border:1px solid #e4e9f0;
+  border-radius:13px;
+  padding:18px;
+  box-shadow:0 2px 8px #00000008
+}
+
+.metric{
+  font-size:28px;
+  font-weight:800;
+  margin-top:6px
+}
+
+.grid{
+  display:grid;
+  grid-template-columns:2fr 1fr;
+  gap:16px;
+  margin-top:18px
+}
+
+table{
+  width:100%;
+  border-collapse:collapse
+}
+
+th,
+td{
+  text-align:left;
+  padding:11px 7px;
+  border-bottom:1px solid #edf0f4;
+  font-size:14px
+}
+
+th{
+  color:#667085
+}
+
+.badge{
+  padding:4px 8px;
+  border-radius:20px;
+  background:#eef2ff;
+  color:#4338ca;
+  font-size:12px
+}
+
+.green{
+  background:#ecfdf3;
+  color:#047857
+}
+
+.amber{
+  background:#fffbeb;
+  color:#b45309
+}
+
+.page.hidden{
+  display:none
+}
+
+.form{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:13px
+}
+
+.field{
+  display:flex;
+  flex-direction:column;
+  gap:6px
+}
+
+.full{
+  grid-column:1/-1
+}
+
+.field input,
+.field select,
+.field textarea{
+  padding:10px;
+  border:1px solid #d7dee8;
+  border-radius:8px;
+  background:white
+}
+
+.field textarea{
+  min-height:110px;
+  resize:vertical
+}
+
+.search{
+  padding:10px;
+  border:1px solid #d7dee8;
+  border-radius:8px;
+  width:240px
+}
+
+.pipeline-row{
+  margin:15px 0
+}
+
+.pipeline-bar{
+  height:9px;
+  background:#e9edf3;
+  border-radius:10px;
+  overflow:hidden;
+  margin-top:6px
+}
+
+.pipeline-fill{
+  height:100%;
+  background:#2563eb
+}
+
+.toast{
+  position:fixed;
+  bottom:25px;
+  right:25px;
+  background:#111827;
+  color:white;
+  padding:13px 18px;
+  border-radius:9px;
+  display:none
+}
+
+@media(max-width:800px){
+
+  .sidebar{
+    width:190px
+  }
+
+  .cards{
+    grid-template-columns:1fr 1fr
+  }
+
+  .grid{
+    grid-template-columns:1fr
+  }
+}
+
+@media(max-width:560px){
+
+  .app{
+    display:block
+  }
+
+  .sidebar{
+    width:100%
+  }
+
+  main{
+    padding:16px
+  }
+
+  .cards{
+    grid-template-columns:1fr 1fr
+  }
+
+  .form{
+    grid-template-columns:1fr
+  }
+
+  .full{
+    grid-column:auto
+  }
+
+  .top{
+    align-items:flex-start;
+    flex-direction:column
+  }
+
+  .search{
+    width:100%
+  }
+
+  table{
+    min-width:650px
+  }
+
+  .panel{
+    overflow-x:auto
+  }
+}
+</style>
 </head>
+
 <body>
-  <h1>Book Factory</h1>
-  <p>AI-powered Book Factory for creating, managing, and publishing digital books.</p>
+
+<div class="app">
+
+<aside class="sidebar">
+
+<div class="brand">
+📚 Book <b>Factory</b>
+</div>
+
+<div class="nav">
+
+<button class="active"
+onclick="showPage('dashboard',this)">
+▦ Dashboard
+</button>
+
+<button onclick="showPage('ledger',this)">
+▤ Publishers Ledger
+</button>
+
+<button onclick="showPage('create',this)">
+＋ Create Book
+</button>
+
+<button onclick="showPage('publishing',this)">
+☁ Publishing Center
+</button>
+
+<button onclick="showPage('analytics',this)">
+◔ Analytics
+</button>
+
+<button onclick="showPage('settings',this)">
+⚙ Settings
+</button>
+
+</div>
+
+</aside>
+
+<main>
+
+<!-- DASHBOARD -->
+
+<section id="dashboard" class="page">
+
+<div class="top">
+
+<div>
+<h1>Book Factory</h1>
+<div class="muted">
+Create, manage and publish your digital books.
+</div>
+</div>
+
+<div>
+<button class="btn"
+onclick="exportData()">
+Export
+</button>
+
+<button class="btn primary"
+onclick="showPage('create')">
+＋ New Book
+</button>
+</div>
+
+</div>
+
+<div class="cards">
+
+<div class="card">
+<div class="muted">Total Books</div>
+<div class="metric" id="totalBooks">0</div>
+</div>
+
+<div class="card">
+<div class="muted">In Production</div>
+<div class="metric" id="productionBooks">0</div>
+</div>
+
+<div class="card">
+<div class="muted">Published</div>
+<div class="metric" id="publishedBooks">0</div>
+</div>
+
+<div class="card">
+<div class="muted">Pipeline Value</div>
+<div class="metric" id="pipelineValue">$0</div>
+</div>
+
+</div>
+
+<div class="grid">
+
+<div class="panel">
+
+<h2>Recent Books</h2>
+
+<table>
+
+<thead>
+<tr>
+<th>Title</th>
+<th>Category</th>
+<th>Status</th>
+<th>Platform</th>
+</tr>
+</thead>
+
+<tbody id="recentBooks"></tbody>
+
+</table>
+
+</div>
+
+<div class="panel">
+
+<h2>Production Pipeline</h2>
+
+<div id="pipeline"></div>
+
+</div>
+
+</div>
+
+</section>
+
+
+<!-- LEDGER -->
+
+<section id="ledger" class="page hidden">
+
+<div class="top">
+
+<div>
+<h1>Publishers Ledger</h1>
+
+<div class="muted">
+Track every title from idea to publication.
+</div>
+</div>
+
+<div>
+
+<input
+class="search"
+id="search"
+placeholder="Search books..."
+oninput="renderLedger()"
+>
+
+<button
+class="btn primary"
+onclick="showPage('create')">
+＋ New Book
+</button>
+
+</div>
+
+</div>
+
+<div class="panel">
+
+<table>
+
+<thead>
+
+<tr>
+<th>Title</th>
+<th>Category</th>
+<th>Format</th>
+<th>Status</th>
+<th>Platform</th>
+<th>Price</th>
+</tr>
+
+</thead>
+
+<tbody id="ledgerTable"></tbody>
+
+</table>
+
+</div>
+
+</section>
+
+
+<!-- CREATE -->
+
+<section id="create" class="page hidden">
+
+<div class="top">
+
+<div>
+<h1>Create Book</h1>
+
+<div class="muted">
+Add a new title to your publishing pipeline.
+</div>
+</div>
+
+</div>
+
+<div class="panel">
+
+<form
+id="bookForm"
+class="form"
+onsubmit="createBook(event)"
+>
+
+<div class="field">
+
+<label>Book Title</label>
+
+<input
+id="bookTitle"
+required
+placeholder="Example: ChatGPT Mastery"
+>
+
+</div>
+
+
+<div class="field">
+
+<label>Category</label>
+
+<select id="bookCategory">
+
+<option>AI / Tech Guides</option>
+<option>Education / Workbooks</option>
+<option>Vedic Astrology & Gemstones</option>
+<option>Mythology / Fiction</option>
+<option>Personal Finance</option>
+<option>Ancient Mysteries</option>
+
+</select>
+
+</div>
+
+
+<div class="field">
+
+<label>Format</label>
+
+<select id="bookFormat">
+
+<option>eBook</option>
+<option>Workbook</option>
+<option>Paperback</option>
+<option>Comic</option>
+
+</select>
+
+</div>
+
+
+<div class="field">
+
+<label>Platform</label>
+
+<select id="bookPlatform">
+
+<option>Amazon KDP</option>
+<option>Gumroad</option>
+<option>Google Play Books</option>
+<option>Multi-platform</option>
+
+</select>
+
+</div>
+
+
+<div class="field">
+
+<label>Status</label>
+
+<select id="bookStatus">
+
+<option>Idea</option>
+<option>In Production</option>
+<option>Ready</option>
+<option>Published</option>
+
+</select>
+
+</div>
+
+
+<div class="field">
+
+<label>Price ($)</label>
+
+<input
+id="bookPrice"
+type="number"
+step="0.01"
+value="9.99"
+>
+
+</div>
+
+
+<div class="field full">
+
+<label>Description</label>
+
+<textarea
+id="bookDescription"
+placeholder="Book description..."
+></textarea>
+
+</div>
+
+
+<div class="field full">
+
+<button
+class="btn primary"
+type="submit">
+Create Book
+</button>
+
+</div>
+
+</form>
+
+</div>
+
+</section>
+
+
+<!-- PUBLISHING -->
+
+<section id="publishing" class="page hidden">
+
+<div class="top">
+
+<div>
+
+<h1>Publishing Center</h1>
+
+<div class="muted">
+Prepare books for distribution.
+</div>
+
+</div>
+
+</div>
+
+<div class="panel">
+
+<h2>Publishing Checklist</h2>
+
+<div id="publishingChecklist"></div>
+
+</div>
+
+</section>
+
+
+<!-- ANALYTICS -->
+
+<section id="analytics" class="page hidden">
+
+<div class="top">
+
+<div>
+
+<h1>Analytics</h1>
+
+<div class="muted">
+Book portfolio overview.
+</div>
+
+</div>
+
+</div>
+
+<div class="cards">
+
+<div class="card">
+
+<div class="muted">
+Average Price
+</div>
+
+<div
+class="metric"
+id="averagePrice">
+$0
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="muted">
+Ready Titles
+</div>
+
+<div
+class="metric"
+id="readyTitles">
+0
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="muted">
+Platforms
+</div>
+
+<div
+class="metric"
+id="platformCount">
+0
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="muted">
+Categories
+</div>
+
+<div
+class="metric"
+id="categoryCount">
+0
+</div>
+
+</div>
+
+</div>
+
+<br>
+
+<div class="panel">
+
+<h2>Category Breakdown</h2>
+
+<div id="categoryBreakdown"></div>
+
+</div>
+
+</section>
+
+
+<!-- SETTINGS -->
+
+<section id="settings" class="page hidden">
+
+<div class="top">
+
+<div>
+
+<h1>Settings</h1>
+
+<div class="muted">
+Book Factory settings.
+</div>
+
+</div>
+
+</div>
+
+<div class="panel">
+
+<h2>Local Data</h2>
+
+<p class="muted">
+Your books are stored in this browser for this prototype.
+</p>
+
+<button
+class="btn"
+onclick="resetDemo()">
+Reset Demo Data
+</button>
+
+</div>
+
+</section>
+
+</main>
+
+</div>
+
+
+<div
+id="toast"
+class="toast">
+Book added successfully
+</div>
+
+
+<script>
+
+const seedBooks = [
+
+{
+title:"Ratna Vigyan",
+category:"Vedic Astrology & Gemstones",
+format:"eBook",
+status:"Published",
+platform:"Amazon KDP",
+price:14.99
+},
+
+{
+title:"The Living Vedic Astrology",
+category:"Vedic Astrology & Gemstones",
+format:"eBook",
+status:"Ready",
+platform:"Gumroad",
+price:12.99
+},
+
+{
+title:"Tarapatti",
+category:"Vedic Astrology & Gemstones",
+format:"eBook",
+status:"In Production",
+platform:"Amazon KDP",
+price:9.99
+},
+
+{
+title:"The Vikramaditya Code",
+category:"Vedic Astrology & Gemstones",
+format:"eBook",
+status:"Idea",
+platform:"Google Play Books",
+price:8.99
+},
+
+{
+title:"The Untold Ravana",
+category:"Mythology / Fiction",
+format:"eBook",
+status:"In Production",
+platform:"Amazon KDP",
+price:7.99
+},
+
+{
+title:"Stone Sky Gods",
+category:"Ancient Mysteries",
+format:"eBook",
+status:"Ready",
+platform:"Gumroad",
+price:9.99
+},
+
+{
+title:"Common Core Math Series",
+category:"Education / Workbooks",
+format:"Workbook",
+status:"Published",
+platform:"Amazon KDP",
+price:6.99
+},
+
+{
+title:"Claude Mastery",
+category:"AI / Tech Guides",
+format:"eBook",
+status:"In Production",
+platform:"Multi-platform",
+price:11.99
+},
+
+{
+title:"ChatGPT Mastery",
+category:"AI / Tech Guides",
+format:"eBook",
+status:"Ready",
+platform:"Multi-platform",
+price:12.99
+},
+
+{
+title:"One Dashboard to Rule Them All",
+category:"Personal Finance",
+format:"eBook",
+status:"Idea",
+platform:"Gumroad",
+price:9.99
+}
+
+];
+
+
+let books =
+JSON.parse(
+localStorage.getItem("bookFactoryBooks")
+) || seedBooks;
+
+
+function saveBooks(){
+
+localStorage.setItem(
+"bookFactoryBooks",
+JSON.stringify(books)
+);
+
+renderAll();
+
+}
+
+
+function money(value){
+
+return "$" +
+Number(value || 0)
+.toFixed(2);
+
+}
+
+
+function badge(status){
+
+let cls="";
+
+if(status==="Published"){
+cls="green";
+}
+
+if(status==="Ready"){
+cls="amber";
+}
+
+return `<span class="badge ${cls}">
+${status}
+</span>`;
+
+}
+
+
+function showPage(id,button){
+
+document
+.querySelectorAll(".page")
+.forEach(page =>
+page.classList.add("hidden")
+);
+
+document
+.getElementById(id)
+.classList.remove("hidden");
+
+
+document
+.querySelectorAll(".nav button")
+.forEach(btn =>
+btn.classList.remove("active")
+);
+
+if(button){
+button.classList.add("active");
+}
+
+renderAll();
+
+}
+
+
+function renderDashboard(){
+
+document.getElementById(
+"totalBooks"
+).textContent=books.length;
+
+
+document.getElementById(
+"productionBooks"
+).textContent=
+books.filter(book =>
+book.status==="Idea" ||
+book.status==="In Production" ||
+book.status==="Ready"
+).length;
+
+
+document.getElementById(
+"publishedBooks"
+).textContent=
+books.filter(book =>
+book.status==="Published"
+).length;
+
+
+const value =
+books.reduce(
+(total,book) =>
+total + Number(book.price || 0),
+0
+);
+
+document.getElementById(
+"pipelineValue"
+).textContent=
+money(value);
+
+
+document.getElementById(
+"recentBooks"
+).innerHTML=
+
+books
+.slice()
+.reverse()
+.slice(0,7)
+.map(book => `
+
+<tr>
+
+<td>
+<strong>${book.title}</strong>
+</td>
+
+<td>
+${book.category}
+</td>
+
+<td>
+${badge(book.status)}
+</td>
+
+<td>
+${book.platform}
+</td>
+
+</tr>
+
+`)
+.join("");
+
+
+const statusCounts={
+
+Idea:0,
+"In Production":0,
+Ready:0,
+Published:0
+
+};
+
+
+books.forEach(book => {
+
+statusCounts[book.status]++;
+
+});
+
+
+const maximum=
+Math.max(
+...Object.values(statusCounts),
+1
+);
+
+
+document.getElementById(
+"pipeline"
+).innerHTML=
+
+Object.entries(statusCounts)
+.map(([status,count]) => `
+
+<div class="pipeline-row">
+
+<div>
+<strong>${status}</strong>
+
+<span style="float:right">
+${count}
+</span>
+
+</div>
+
+<div class="pipeline-bar">
+
+<div
+class="pipeline-fill"
+style="width:${count/maximum*100}%">
+</div>
+
+</div>
+
+</div>
+
+`)
+.join("");
+
+}
+
+
+function renderLedger(){
+
+const search=
+(
+document.getElementById("search")?.value ||
+""
+).toLowerCase();
+
+
+const filtered=
+books.filter(book =>
+
+(
+book.title +
+" " +
+book.category +
+" " +
+book.platform
+)
+.toLowerCase()
+.includes(search)
+
+);
+
+
+document.getElementById(
+"ledgerTable"
+).innerHTML=
+
+filtered.map(book => `
+
+<tr>
+
+<td>
+<strong>${book.title}</strong>
+</td>
+
+<td>
+${book.category}
+</td>
+
+<td>
+${book.format}
+</td>
+
+<td>
+${badge(book.status)}
+</td>
+
+<td>
+${book.platform}
+</td>
+
+<td>
+${money(book.price)}
+</td>
+
+</tr>
+
+`).join("");
+
+}
+
+
+function renderPublishing(){
+
+document.getElementById(
+"publishingChecklist"
+).innerHTML=
+
+books.map(book => `
+
+<div
+style="
+padding:12px 0;
+border-bottom:1px solid #edf0f4;
+">
+
+<strong>${book.title}</strong>
+
+<span style="float:right">
+${badge(book.status)}
+</span>
+
+<div
+class="muted"
+style="margin-top:5px">
+
+☐ Manuscript
+&nbsp;&nbsp;
+☐ Cover
+&nbsp;&nbsp;
+☐ Metadata
+&nbsp;&nbsp;
+☐ EPUB/PDF
+&nbsp;&nbsp;
+☐ Upload
+
+</div>
+
+</div>
+
+`).join("");
+
+}
+
+
+function renderAnalytics(){
+
+const prices=
+books.map(book =>
+Number(book.price || 0)
+);
+
+const average=
+prices.reduce(
+(a,b)=>a+b,
+0
+) /
+(prices.length || 1);
+
+
+document.getElementById(
+"averagePrice"
+).textContent=
+money(average);
+
+
+document.getElementById(
+"readyTitles"
+).textContent=
+books.filter(book =>
+book.status==="Ready"
+).length;
+
+
+document.getElementById(
+"platformCount"
+).textContent=
+new Set(
+books.map(book =>
+book.platform
+)
+).size;
+
+
+document.getElementById(
+"categoryCount"
+).textContent=
+new Set(
+books.map(book =>
+book.category
+)
+).size;
+
+
+const categories={};
+
+books.forEach(book => {
+
+categories[book.category]=
+(categories[book.category] || 0)+1;
+
+});
+
+
+document.getElementById(
+"categoryBreakdown"
+).innerHTML=
+
+Object.entries(categories)
+.map(([category,count]) => `
+
+<p>
+
+<strong>${category}</strong>
+
+<span style="float:right">
+${count} title(s)
+</span>
+
+</p>
+
+`)
+.join("");
+
+}
+
+
+function createBook(event){
+
+event.preventDefault();
+
+
+const book={
+
+title:
+document.getElementById(
+"bookTitle"
+).value,
+
+category:
+document.getElementById(
+"bookCategory"
+).value,
+
+format:
+document.getElementById(
+"bookFormat"
+).value,
+
+platform:
+document.getElementById(
+"bookPlatform"
+).value,
+
+status:
+document.getElementById(
+"bookStatus"
+).value,
+
+price:
+Number(
+document.getElementById(
+"bookPrice"
+).value
+),
+
+description:
+document.getElementById(
+"bookDescription"
+).value
+
+};
+
+
+books.push(book);
+
+saveBooks();
+
+event.target.reset();
+
+showPage("ledger");
+
+showToast(
+"Book added to Publishers Ledger"
+);
+
+}
+
+
+function exportData(){
+
+const file=
+new Blob(
+[
+JSON.stringify(
+books,
+null,
+2
+)
+],
+{
+type:"application/json"
+}
+);
+
+const url=
+URL.createObjectURL(file);
+
+const link=
+document.createElement("a");
+
+link.href=url;
+
+link.download=
+"book-factory-ledger.json";
+
+link.click();
+
+URL.revokeObjectURL(url);
+
+}
+
+
+function resetDemo(){
+
+if(
+confirm(
+"Reset Book Factory to the demo data?"
+)
+){
+
+books=[...seedBooks];
+
+saveBooks();
+
+showToast(
+"Demo data restored"
+);
+
+}
+
+}
+
+
+function showToast(message){
+
+const toast=
+document.getElementById(
+"toast"
+);
+
+toast.textContent=message;
+
+toast.style.display="block";
+
+setTimeout(
+() => toast.style.display="none",
+2000
+);
+
+}
+
+
+function renderAll(){
+
+renderDashboard();
+renderLedger();
+renderPublishing();
+renderAnalytics();
+
+}
+
+
+renderAll();
+
+</script>
+
 </body>
 </html>
