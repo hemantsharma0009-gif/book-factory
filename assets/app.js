@@ -98,43 +98,62 @@ var DEFAULT_SETTINGS = {
    Seed library
    --------------------------------------------------------- */
 
+/**
+ * The real catalogue, as recorded in the Publisher's Ledger (Drive, Sept 2026):
+ * title, category, per-platform sale status and list price.
+ *
+ * Sale status here is what the ledger asserts, not something this app observed
+ * - Amazon and Google publish no API to check against, so it is only as current
+ *   as the last time the ledger was updated. Correct it in the editor when it
+ *   drifts.
+ */
 function seedBooks() {
   var raw = [
-    ["Ratna Vigyan", "Gemstone Sciences", "Astrology", "Packaging", 18, 18, 62000, 62000, "high", 0],
-    ["The Living Vedic Astrology", "Gemstone Sciences", "Astrology", "QA", 22, 22, 81000, 80000, "normal", 0],
-    ["Tarapatti", "Gemstone Sciences", "Astrology", "Editing", 16, 16, 54000, 58000, "normal", 0],
-    ["The Vikramaditya Code", "Vikramaditya", "Astrology", "Research", 20, 4, 9000, 72000, "normal", 0],
-    ["The Untold Ravana", "Lanka Chronicles", "Mythology", "Chapters", 24, 15, 44000, 76000, "high", 0],
-    ["Stone Sky Gods", "Lanka Chronicles", "Mystery", "QA", 26, 26, 92000, 90000, "high", 0],
-    ["Common Core Math Series", "Classroom Core", "Education", "Blueprint", 20, 0, 0, 32000, "normal", 0],
-    ["Claude Mastery", "Model Mastery", "AI / Tech", "Outline", 16, 0, 2000, 48000, "normal", 0],
-    ["ChatGPT Mastery", "Model Mastery", "AI / Tech", "Chapters", 16, 7, 21000, 48000, "normal", 0],
-    ["One Dashboard to Rule Them All", "Operator Series", "Finance", "Blueprint", 12, 0, 0, 40000, "normal", 0]
+    // title, series, category, chapters, words, price, liveOn[], stage-if-not-live
+    ["Ratna Vigyan", "Gemstone Sciences", "Astrology", 18, 62000, 9.99, [], "Packaging"],
+    ["The Living Vedic Astrology", "Gemstone Sciences", "Astrology", 22, 80000, 8.99, ["gumroad"], null],
+    ["Tarapatti", "Gemstone Sciences", "Astrology", 16, 58000, 7.99, ["amazon"], null],
+    ["The Vikramaditya Code", "Vikramaditya", "Astrology", 20, 72000, 8.99, ["amazon"], null],
+    ["The Untold Ravana (Sita Secret Edition)", "Lanka Chronicles", "Mythology", 24, 76000, 6.99, ["amazon"], null],
+    ["Stone Sky Gods", "Lanka Chronicles", "Mystery", 26, 90000, 7.99, ["amazon"], null],
+    ["Common Core Math Series (Grades 3–9)", "Classroom Core", "Education", 20, 32000, 9.99, ["amazon"], null],
+    ["Claude Mastery", "Model Mastery", "AI / Tech", 16, 48000, 12.99, ["gumroad"], null],
+    ["ChatGPT Mastery", "Model Mastery", "AI / Tech", 16, 48000, 12.99, ["gumroad"], null],
+    ["One Dashboard to Rule Them All", "Operator Series", "Finance", 14, 40000, 9.99, ["gumroad"], null],
+    ["Claude Mastery Bundle (2026 Edition)", "Model Mastery", "AI / Tech", 32, 96000, 16.99, ["gumroad"], null]
   ];
 
   var now = Date.now();
 
   return raw.map(function (r, i) {
+    var liveOn = r[6];
+    var live = liveOn.length > 0;
+    var chapters = r[3];
+    var words = r[4];
+
     return {
       id: "bk_seed_" + (i + 1),
       title: r[0],
       series: r[1],
       category: r[2],
-      author: "Book Factory Studio",
+      author: "Hemant Sharma",
       format: r[2] === "Education" ? "Workbook" : "EPUB / PDF",
-      description: r[0] + " — produced by the Book Factory autonomous pipeline.",
-      stage: r[3],
-      chapters: { total: r[4], done: r[5] },
-      words: { done: r[6], target: r[7] },
-      priority: r[8],
-      revenue: r[9],
-      queued: r[3] === "Chapters",
+      description: r[0] + " — published by Hemant Sharma.",
+      // A title on sale is finished; anything else keeps its production stage.
+      stage: live ? "Publishing" : r[7] || "Blueprint",
+      chapters: { total: chapters, done: live ? chapters : Math.round(chapters * 0.4) },
+      words: { done: live ? words : Math.round(words * 0.4), target: words },
+      priority: "normal",
+      revenue: 0,
+      queued: false,
       released: false,
-      storefronts: { amazon: "", gumroad: "", other: "" },
-      publishedAt: null,
+      storefronts: { amazon: "", gumroad: "", play: "", other: "" },
+      liveOn: liveOn,
+      publishedAt: live ? now - (11 - i) * 86400000 : null,
       issues: [],
-      createdAt: now - (10 - i) * 86400000,
-      updatedAt: now - (10 - i) * 3600000
+      createdAt: now - (11 - i) * 86400000,
+      updatedAt: now - (11 - i) * 3600000,
+      listPriceUsd: r[5]
     };
   });
 }
@@ -328,6 +347,12 @@ function normaliseBook(raw, index) {
     // Where the book is actually on sale. A title with any of these is LIVE,
     // whatever the pipeline thinks - a published book is not "in production".
     storefronts: normaliseStorefronts(book.storefronts),
+    // Stores where the title is on sale but no link has been recorded.
+    liveOn: Array.isArray(book.liveOn)
+      ? book.liveOn.filter(function (id) {
+          return STORES.some(function (store) { return store.id === id; });
+        })
+      : [],
     publishedAt: toInt(book.publishedAt, 0) || null,
     issues: Array.isArray(book.issues) ? book.issues.filter(Boolean).map(function (issue) {
       return {
@@ -344,6 +369,7 @@ function normaliseBook(raw, index) {
 var STORES = [
   { id: "amazon", label: "Amazon / KDP" },
   { id: "gumroad", label: "Gumroad" },
+  { id: "play", label: "Google Play Books" },
   { id: "other", label: "Other store" },
 ];
 
@@ -360,9 +386,12 @@ function normaliseStorefronts(raw) {
 }
 
 function liveStores(book) {
-  var stores = book && book.storefronts;
-  if (!stores) return [];
-  return STORES.filter(function (store) { return stores[store.id]; });
+  if (!book) return [];
+  var stores = book.storefronts || {};
+  var flagged = book.liveOn || [];
+  return STORES.filter(function (store) {
+    return stores[store.id] || flagged.indexOf(store.id) >= 0;
+  });
 }
 
 function isLive(book) {
@@ -1085,8 +1114,11 @@ function renderLibrary() {
             '<span class="small muted">' + relativeTime(book.updatedAt) + "</span></div>" +
           (live
             ? '<div class="chips">' + liveStores(book).map(function (store) {
-                return '<a class="chip" href="' + escapeHTML(book.storefronts[store.id]) +
-                  '" target="_blank" rel="noopener">' + escapeHTML(store.label) + " ↗</a>";
+                var url = book.storefronts[store.id];
+                return url
+                  ? '<a class="chip" href="' + escapeHTML(url) + '" target="_blank" rel="noopener">' +
+                      escapeHTML(store.label) + " ↗</a>"
+                  : '<span class="chip">' + escapeHTML(store.label) + "</span>";
               }).join("") + "</div>"
             : "") +
           '<div class="actions">' +
@@ -1495,8 +1527,11 @@ function viewBook(id) {
         ? statRow(
             "On sale at",
             liveStores(book).map(function (store) {
-              return '<a href="' + escapeHTML(book.storefronts[store.id]) +
-                '" target="_blank" rel="noopener">' + escapeHTML(store.label) + " ↗</a>";
+              var url = book.storefronts[store.id];
+              return url
+                ? '<a href="' + escapeHTML(url) + '" target="_blank" rel="noopener">' +
+                    escapeHTML(store.label) + " ↗</a>"
+                : escapeHTML(store.label);
             }).join(" · "),
           )
         : "") +
@@ -1550,6 +1585,7 @@ function editBook(id) {
     priority: "normal",
     revenue: 0,
     storefronts: normaliseStorefronts({}),
+    liveOn: [],
   };
 
   function options(list, selected) {
@@ -1593,11 +1629,17 @@ function editBook(id) {
 
       '<fieldset style="border:1px solid var(--border);border-radius:10px;padding:12px;margin:0 0 12px">' +
         '<legend class="small muted" style="padding:0 6px">Already on sale? Paste the listing links</legend>' +
-        '<p class="small muted" style="margin:0 0 10px">A book with any link here is marked LIVE and is kept out of the production queue.</p>' +
+        '<p class="small muted" style="margin:0 0 10px">Tick a store to mark the title on sale there. The link is optional — a book can be live whether or not you have the URL handy. Anything marked on sale is kept out of the production queue.</p>' +
         STORES.map(function (store) {
-          return '<label class="field"><span>' + escapeHTML(store.label) + "</span>" +
-            '<input class="input" name="store_' + store.id + '" type="url" placeholder="https://…" value="' +
-            escapeHTML((draft.storefronts && draft.storefronts[store.id]) || "") + '"></label>';
+          var onSale = (draft.liveOn || []).indexOf(store.id) >= 0 ||
+            Boolean(draft.storefronts && draft.storefronts[store.id]);
+          return '<div style="margin-bottom:10px">' +
+            '<label class="switch"><input type="checkbox" name="live_' + store.id + '"' +
+              (onSale ? " checked" : "") + "> <span>On sale at " + escapeHTML(store.label) + "</span></label>" +
+            '<input class="input" name="store_' + store.id + '" type="url" style="width:100%" ' +
+              'placeholder="Listing link (optional)" value="' +
+              escapeHTML((draft.storefronts && draft.storefronts[store.id]) || "") + '">' +
+            "</div>";
         }).join("") +
       "</fieldset>" +
 
@@ -1648,6 +1690,7 @@ function submitBookForm(book, form) {
     released: false,
     issues: [],
     storefronts: normaliseStorefronts({}),
+    liveOn: [],
     publishedAt: null,
     createdAt: Date.now()
   };
@@ -1664,11 +1707,14 @@ function submitBookForm(book, form) {
   target_book.revenue = Math.max(0, toNum(data.get("revenue"), 0));
 
   var storefronts = {};
+  var liveOn = [];
   STORES.forEach(function (store) {
     storefronts[store.id] = String(data.get("store_" + store.id) || "").trim();
+    if (data.get("live_" + store.id)) liveOn.push(store.id);
   });
   var wasLive = isLive(target_book);
   target_book.storefronts = normaliseStorefronts(storefronts);
+  target_book.liveOn = liveOn;
   if (isLive(target_book) && !wasLive) target_book.publishedAt = Date.now();
   if (!isLive(target_book)) target_book.publishedAt = null;
   target_book.description = String(data.get("description") || "").trim();
@@ -1743,6 +1789,7 @@ function markLive(id) {
       : "other";
 
   book.storefronts[store] = trimmed;
+  if ((book.liveOn || []).indexOf(store) < 0) book.liveOn = (book.liveOn || []).concat(store);
   book.publishedAt = book.publishedAt || Date.now();
   book.queued = false;
   book.stage = "Publishing";
