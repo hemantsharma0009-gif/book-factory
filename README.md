@@ -116,7 +116,17 @@ phone on the same wifi: you can read the manuscript and save the EPUB, and
 that is all. There is no approve, reject, publish or generate route in that
 server - not disabled, absent.
 
-Each link carries a 128-bit token scoped to one book, expires (24 hours by
-default), and dies when you stop the command. It is plain HTTP on a local
-network, so treat a live link as readable by anyone on that wifi, and do not
-forward the port to the internet.
+Each link carries a 128-bit token scoped to one book, expires (2 hours by
+default, `--hours` to change it), and dies when you stop the command.
+
+Traffic is encrypted. The command generates a throwaway certificate covering
+every address your machine answers on, and prints its SHA-256 fingerprint. Your
+phone will warn that the certificate is untrusted - no certificate authority
+will vouch for a private address like `192.168.1.14`, because that address
+means a different machine on every network. Check the fingerprint the phone
+shows against the one the command printed before you tap through; if it differs,
+something else is answering on that address.
+
+`--insecure` falls back to plain HTTP for a machine with no `openssl`. On that
+path the book and the link are readable by anyone who can watch traffic on the
+network, so it is for a network you trust and never for a forwarded port.

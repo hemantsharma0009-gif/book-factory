@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import https from "node:https";
+import { X509Certificate } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import JSZip from "jszip";
@@ -12,7 +15,7 @@ import { renderFigure } from "../src/illustrate/charts.js";
 import { genericTitleReason } from "../src/agents/title-check.js";
 import { stubPlan } from "../src/agents/planner.js";
 import { __test as __editor } from "../src/agents/editor.js";
-import { mintLink, revokeLink, createShareServer, __test as __share } from "../src/share.js";
+import { mintLink, revokeLink, createShareServer, makeCertificate, __test as __share } from "../src/share.js";
 
 test("genre rotation never repeats within the cooldown window", () => {
   const history = [];
@@ -604,6 +607,78 @@ test("the share server refuses every write, whatever the path", async () => {
       const res = await fetch(`${base}${path}`);
       assert.equal(res.status, 404, `GET ${path} returned ${res.status}`);
     }
+  } finally {
+    server.close();
+  }
+});
+
+test("the share certificate covers every address a phone might use", () => {
+  const { key, cert, fingerprint } = makeCertificate(["192.168.1.14", "10.0.0.5"]);
+  const x = new X509Certificate(cert);
+
+  for (const address of ["127.0.0.1", "192.168.1.14", "10.0.0.5"]) {
+    assert.match(x.subjectAltName, new RegExp(address.replace(/\./g, "\\.")),
+      `${address} is missing from the certificate, so a phone there would refuse outright`);
+  }
+
+  // The fingerprint the command prints has to be the one the phone will show.
+  assert.equal(fingerprint, x.fingerprint256);
+  assert.match(key, /-----BEGIN PRIVATE KEY-----/);
+
+  // Short-lived by construction: it is thrown away with the session.
+  assert.ok(new Date(x.validTo) - new Date(x.validFrom) <= 2 * 86400000);
+});
+
+test("the share private key is not left on disk", () => {
+  const before = fsSync.readdirSync(os.tmpdir()).filter((f) => f.startsWith("book-factory-share-"));
+  makeCertificate(["192.168.1.14"]);
+  const after = fsSync.readdirSync(os.tmpdir()).filter((f) => f.startsWith("book-factory-share-"));
+  assert.deepEqual(after, before, "a temp directory holding the key survived");
+});
+
+test("every share response carries the headers that keep the link private", async () => {
+  const { key, cert } = makeCertificate([]);
+  const server = createShareServer({ key, cert });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+  const token = mintLink("bk_headers");
+
+  // A throwaway certificate is untrusted by definition, so this goes through
+  // node:https rather than fetch: the point is the headers, not the chain.
+  const head = (path) =>
+    new Promise((resolve, reject) => {
+      https
+        .get({ host: "127.0.0.1", port, path, rejectUnauthorized: false }, (res) => {
+          res.resume();
+          resolve(res.headers);
+        })
+        .on("error", reject);
+    });
+
+  try {
+    for (const path of [`/s/${token}`, `/s/${token}/epub`, "/nope"]) {
+      const headers = await head(path);
+      assert.match(headers["cache-control"] || "", /no-store/, `${path} is cacheable`);
+      assert.equal(headers["referrer-policy"], "no-referrer", `${path} could leak the token`);
+      assert.equal(headers["x-content-type-options"], "nosniff", `${path} allows sniffing`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test("the share server still works without TLS, for a trusted network", async () => {
+  // --insecure is a deliberate fallback for someone with no openssl; it must
+  // keep every other guarantee.
+  const server = createShareServer(null);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const res = await fetch(`${base}/s/${"0".repeat(32)}`);
+    assert.equal(res.status, 404);
+    assert.match(res.headers.get("cache-control") || "", /no-store/);
+    const write = await fetch(`${base}/api/books/x/publish`, { method: "POST" });
+    assert.equal(write.status, 405);
   } finally {
     server.close();
   }

@@ -12,8 +12,10 @@
  *   reject <bookId> [reason]
  *   publish <bookId> [--gumroad] [--dry-run]
  *   pack <bookId>                 write the KDP upload sheet
- *   share <bookId> [--hours n]    serve this one book read-only on your LAN,
- *                                 so you can read it on a phone before approving
+ *   share <bookId> [--hours n] [--insecure]
+ *                                 serve this one book read-only on your LAN over
+ *                                 HTTPS, so you can read it on a phone before
+ *                                 approving
  *   schedule --cadence daily|weekly|fortnightly|monthly --time HH:MM [--off]
  *   next-due                      exit 0 if a run is due (for cron)
  */
@@ -26,7 +28,7 @@ import { publishToGumroad, listGumroadProducts } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt, isDue, shouldRun } from "./scheduler.js";
 import { GENRES } from "./genres.js";
 import { DEFAULTS, LANGUAGES } from "./config.js";
-import { createShareServer, mintLink, lanAddresses } from "./share.js";
+import { createShareServer, mintLink, lanAddresses, makeCertificate } from "./share.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -207,29 +209,64 @@ async function main() {
       if (!book) throw new Error(`No book ${id}`);
 
       const port = Number(process.env.BOOK_FACTORY_SHARE_PORT || 4322);
-      const hours = Number(flag("hours", 24));
+      const hours = Number(flag("hours", 2));
+      const addresses = lanAddresses(port);
+
+      // HTTPS by default. The manuscript is unpublished work and the token
+      // that unlocks it rides in the URL; neither belongs in cleartext on a
+      // network you do not own.
+      let tls = null;
+      let fingerprint = null;
+      if (!flag("insecure")) {
+        try {
+          const made = makeCertificate(addresses.map((a) => new URL(a).hostname));
+          tls = { key: made.key, cert: made.cert };
+          fingerprint = made.fingerprint;
+        } catch (err) {
+          throw new Error(
+            `Could not generate a certificate (${err.message.trim().split("\n")[0]}).\n` +
+              `openssl is needed for HTTPS. Install it, or run with --insecure to serve\n` +
+              `plain HTTP - only do that on a network you trust.`,
+          );
+        }
+      }
+
+      const scheme = tls ? "https" : "http";
       const token = mintLink(book.id, hours * 3600_000);
-      const server = createShareServer();
+      const server = createShareServer(tls);
 
       // 0.0.0.0 on purpose: the whole point is that a phone can reach it. The
       // review console, which can spend money and publish, stays on localhost.
       await new Promise((resolve) => server.listen(port, "0.0.0.0", resolve));
 
-      const addresses = lanAddresses(port);
       log(`Sharing "${book.title}" read-only for ${hours} hour(s).\n`);
       if (addresses.length) {
-        for (const base of addresses) log(`  ${base}/s/${token}`);
+        for (const base of addresses) log(`  ${base.replace(/^http:/, `${scheme}:`)}/s/${token}`);
       } else {
-        log(`  http://localhost:${port}/s/${token}   (no LAN address found)`);
+        log(`  ${scheme}://localhost:${port}/s/${token}   (no LAN address found)`);
       }
-      log(`
+
+      if (tls) {
+        log(`
 Open that on your phone, on the same wifi. It can read the book and save the
 EPUB - nothing else. Approving and publishing stay on this machine.
 
-This is plain HTTP on your local network: anyone on this wifi who has the link
-can read the book. Do not forward the port to the internet.
+Your phone will warn that the certificate is not trusted. That is expected: no
+certificate authority will vouch for a private address like 192.168.x.x, so
+this one is self-signed and thrown away when you stop. Before you tap through,
+check the phone shows this fingerprint:
 
-Ctrl-C stops sharing and kills the link.`);
+  ${fingerprint}
+
+If it shows anything else, stop - something else is answering on that address.`);
+      } else {
+        log(`
+WARNING: --insecure means plain HTTP. The book and the link are readable by
+anyone who can watch traffic on this network. Only do this on a network you
+trust, and never with the port forwarded to the internet.`);
+      }
+
+      log(`\nCtrl-C stops sharing and kills the link.`);
 
       // Hold the process open until interrupted.
       await new Promise(() => {});

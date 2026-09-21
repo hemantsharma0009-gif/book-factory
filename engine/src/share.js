@@ -20,19 +20,90 @@
  * Each link carries a 128-bit random token scoped to ONE book and expires.
  * Links are held in memory, so restarting the server invalidates every one.
  *
- * This is plain HTTP on a local network: treat a link as readable by anyone on
- * that wifi, and do not put it on the public internet.
+ * Traffic is encrypted. The server generates a throwaway certificate at
+ * startup and serves HTTPS, so an unpublished manuscript is not readable by
+ * anyone else on the network. See makeCertificate() for why the certificate is
+ * self-signed and what that costs you.
  */
 import http from "node:http";
+import https from "node:https";
 import os from "node:os";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import * as store from "./store.js";
 import { markdownToXhtml } from "./epub.js";
 
-const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+// Short by default. A link you meant to use for ten minutes should not still
+// work tomorrow; --hours raises it deliberately.
+const DEFAULT_TTL_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * A throwaway TLS certificate for this one sharing session.
+ *
+ * It has to be self-signed: a real certificate authority will not issue for
+ * 192.168.x.x, because that address means a different machine on every
+ * network. So the phone shows a warning the first time, and the command prints
+ * the certificate's fingerprint for you to check against the one the phone
+ * shows. Checking it once is what makes the warning meaningful rather than
+ * something to tap through.
+ *
+ * The key exists in a 0600 temp file for as long as openssl needs to write it,
+ * is read into memory, and the file is deleted before the server starts. It is
+ * never written into the repository or the library.
+ */
+export function makeCertificate(addresses = []) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "book-factory-share-"), { mode: 0o700 });
+  const keyPath = path.join(dir, "key.pem");
+  const certPath = path.join(dir, "cert.pem");
+
+  // Every address a phone might use to reach us has to be in the certificate,
+  // or the phone rejects it outright instead of merely warning.
+  const san = ["IP:127.0.0.1", "DNS:localhost", ...addresses.map((a) => `IP:${a}`)].join(",");
+
+  try {
+    execFileSync(
+      "openssl",
+      [
+        "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", keyPath, "-out", certPath,
+        "-days", "1",
+        "-subj", "/CN=book-factory share",
+        "-addext", `subjectAltName=${san}`,
+      ],
+      { stdio: ["ignore", "ignore", "pipe"] },
+    );
+
+    const key = fs.readFileSync(keyPath, "utf8");
+    const cert = fs.readFileSync(certPath, "utf8");
+    return { key, cert, fingerprint: new X509Certificate(cert).fingerprint256 };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 /** token -> { bookId, expiresAt } */
 const links = new Map();
+
+/**
+ * Headers every response carries.
+ *
+ * no-store: the manuscript is unpublished; it should not sit in a cache.
+ * no-referrer: the share token is in the URL, and a Referer header would carry
+ *   it to anything the page ever linked out to.
+ * nosniff: this server returns exactly two content types; never let a browser
+ *   guess a third.
+ */
+function secure(headers = {}) {
+  return {
+    "Cache-Control": "no-store, max-age=0",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    ...headers,
+  };
+}
 
 const esc = (s) =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -136,7 +207,7 @@ const routes = [
     if (!book) return notFound(res);
 
     const hours = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 3600000));
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.writeHead(200, secure({ "Content-Type": "text/html; charset=utf-8" }));
     res.end(page(book.title, `
 <h1>${esc(book.title)}</h1>
 <p class="sub">${esc(book.subtitle || "")}</p>
@@ -172,7 +243,7 @@ const routes = [
       .map((block) => (block.startsWith("# ") ? `<h2>${esc(block.slice(2))}</h2>` : markdownToXhtml(block)))
       .join("\n");
 
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.writeHead(200, secure({ "Content-Type": "text/html; charset=utf-8" }));
     res.end(page(book.title, `
 <h1>${esc(book.title)}</h1>
 <p class="sub">${esc(book.subtitle || "")}</p>
@@ -188,12 +259,12 @@ ${body}`, book.language));
 
     try {
       const data = await store.readArtifact(entry.bookId, book.epubFile);
-      res.writeHead(200, {
+      res.writeHead(200, secure({
         "Content-Type": "application/epub+zip",
         // Without this a phone browser tries to render the zip rather than save it.
         "Content-Disposition": `attachment; filename="${book.epubFile.replace(/[^\w.-]/g, "_")}"`,
         "Content-Length": data.length,
-      });
+      }));
       res.end(data);
     } catch {
       notFound(res);
@@ -202,15 +273,19 @@ ${body}`, book.language));
 ];
 
 function notFound(res) {
-  res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+  res.writeHead(404, secure({ "Content-Type": "text/html; charset=utf-8" }));
   res.end(page("Not found", `<h1>Not found</h1><p class="sub">This link has expired, been revoked, or never existed.</p>`));
 }
 
-export function createShareServer() {
-  return http.createServer(async (req, res) => {
+/**
+ * @param {object} [tls]  { key, cert } to serve HTTPS. Omit only for a
+ *                        deliberate plaintext fallback - see the CLI.
+ */
+export function createShareServer(tls = null) {
+  const handler = async (req, res) => {
     if (req.method !== "GET" && req.method !== "HEAD") {
       // There is no write surface here at all; say so plainly.
-      res.writeHead(405, { Allow: "GET, HEAD", "Content-Type": "text/plain" });
+      res.writeHead(405, secure({ Allow: "GET, HEAD", "Content-Type": "text/plain" }));
       return res.end("This server is read-only.\n");
     }
 
@@ -226,13 +301,15 @@ export function createShareServer() {
       try {
         return await handler(res, match.slice(1), entry);
       } catch {
-        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.writeHead(500, secure({ "Content-Type": "text/plain" }));
         return res.end("error\n");
       }
     }
 
     notFound(res);
-  });
+  };
+
+  return tls ? https.createServer(tls, handler) : http.createServer(handler);
 }
 
 export const __test = { links, resolve };
