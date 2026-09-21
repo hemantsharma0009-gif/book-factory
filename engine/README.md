@@ -29,10 +29,17 @@ node src/cli.js generate --chapters 12 --words 2200
 
 ## What it costs
 
-Chapters are drafted through the **Batch API at 50% off**, and the series bible
-is sent as a **cached prefix** so shared context is billed once rather than once
-per chapter. A 12-chapter, ~26,000-word book on `claude-sonnet-5` runs about
-**$1**. Every book records its actual measured spend in `library/library.json`.
+Chapters are drafted through the **Batch API at 50% off**, and shared context —
+the series bible, and during editing the whole manuscript — is sent as a **cached
+prefix**, so it is billed as one cache write plus cheap reads rather than resent
+with every chapter. A 12-chapter, ~26,000-word book on `claude-sonnet-5` runs
+about **$1**. Every book records its actual measured spend in
+`library/library.json`.
+
+The editorial pass reads the entire manuscript, not chapter summaries, because
+only the text reveals that chapter 3 and chapter 9 make the same point in the
+same words. Caching makes that affordable: ~$0.09 of input per book instead of
+~$0.44 if the manuscript were resent for every chapter.
 
 Change the model with `BOOK_FACTORY_MODEL=claude-opus-5` (better prose, ~3× the
 cost).

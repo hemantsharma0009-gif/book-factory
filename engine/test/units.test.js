@@ -7,6 +7,7 @@ import { nextRunAt, isDue } from "../src/scheduler.js";
 import { renderFigure } from "../src/illustrate/charts.js";
 import { genericTitleReason } from "../src/agents/title-check.js";
 import { stubPlan } from "../src/agents/planner.js";
+import { __test as __editor } from "../src/agents/editor.js";
 
 test("genre rotation never repeats within the cooldown window", () => {
   const history = [];
@@ -236,3 +237,66 @@ function stubListingFor(plan, genre) {
     ],
   };
 }
+
+test("editor prefix carries every chapter's full text, not summaries", () => {
+  const chapters = [
+    { number: 1, title: "One", summary: "s1", body: "UNIQUE_BODY_ONE and more words." },
+    { number: 2, title: "Two", summary: "s2", body: "UNIQUE_BODY_TWO and more words." },
+    { number: 3, title: "Three", summary: "s3", body: "UNIQUE_BODY_THREE and more words." },
+  ];
+  const manuscript = __editor.buildManuscript(chapters);
+
+  for (const c of chapters) {
+    assert.ok(manuscript.includes(c.body), `chapter ${c.number} body missing`);
+    assert.ok(manuscript.includes(`<<<CHAPTER ${c.number} START>>>`), "missing start marker");
+    assert.ok(manuscript.includes(`<<<CHAPTER ${c.number} END>>>`), "missing end marker");
+  }
+  // Summaries were the old approach; they must not be what the editor reads.
+  assert.ok(!manuscript.includes("s1"), "summary leaked into the manuscript");
+});
+
+test("editor sees chapters in BOTH directions, not only earlier ones", () => {
+  const chapters = [
+    { number: 1, title: "One", summary: "", body: "EARLY_TEXT" },
+    { number: 2, title: "Two", summary: "", body: "MIDDLE_TEXT" },
+    { number: 3, title: "Three", summary: "", body: "LATE_TEXT" },
+  ];
+  const manuscript = __editor.buildManuscript(chapters);
+  // Editing chapter 2 must expose chapter 3, which the old summary-only
+  // version could never do.
+  assert.ok(manuscript.includes("LATE_TEXT"), "later chapter not visible to the editor");
+});
+
+test("deduplication rule is deterministic and stated from both sides", () => {
+  const rule = __editor.EDIT_INSTRUCTION;
+  // Both branches must be spelled out, or two parallel editors can both cut
+  // the same material and it disappears from the book.
+  assert.match(rule, /LOWER number keeps it/);
+  assert.match(rule, /HIGHER-numbered chapter gives way/);
+  assert.match(rule, /leave yours exactly as\s+it is/);
+  assert.match(rule, /if you both\s+cut, the book loses the material altogether/);
+});
+
+test("window fallback keeps neighbours and drops distant chapters", () => {
+  const chapters = Array.from({ length: 20 }, (_, i) => ({
+    number: i + 1, title: `C${i + 1}`, summary: "", body: `BODY_${i + 1}`,
+  }));
+  const window = __editor.buildWindow(chapters, 10);
+
+  assert.ok(window.includes("BODY_10"), "target chapter missing");
+  assert.ok(window.includes("BODY_7") && window.includes("BODY_13"), "±3 neighbours missing");
+  assert.ok(!window.includes("BODY_6"), "chapter outside the window leaked in");
+  assert.ok(!window.includes("BODY_20"), "distant chapter leaked in");
+});
+
+test("a normal-length book is never windowed", () => {
+  // 12 chapters of 2200 words is the default shape; it must fit comfortably.
+  const chapters = Array.from({ length: 12 }, (_, i) => ({
+    number: i + 1, title: `C${i + 1}`, summary: "", body: "word ".repeat(2200),
+  }));
+  const manuscript = __editor.buildManuscript(chapters);
+  assert.ok(
+    manuscript.length < __editor.MAX_MANUSCRIPT_CHARS,
+    `default book would be windowed (${manuscript.length} chars)`,
+  );
+});
