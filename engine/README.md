@@ -20,12 +20,20 @@ node src/cli.js generate --dry-run
 npm start          # http://127.0.0.1:4321
 ```
 
-For a real run, export a key first:
+For a real run, export a key first. **Start with a sample** — it writes the plan
+and the first two chapters so you can judge the prose for about a tenth of the
+cost of a full book:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-node src/cli.js generate --chapters 12 --words 2200
+
+node src/cli.js generate --sample        # ~$0.09, 2 chapters — read these first
+node src/cli.js generate                 # ~$0.39, the full 12-chapter book
 ```
+
+A sample plans the *whole* book and writes the opening chapters against that
+full plan, so what you read is what the real run would produce. It does not
+consume a genre slot, so you can write the same book properly afterwards.
 
 ## What it costs
 
