@@ -74,12 +74,28 @@ var BLUEPRINTS = [
     blurb: "Exercises · answer keys · difficulty ramp · QA" }
 ];
 
+/**
+ * Cadences match engine/src/scheduler.js exactly. They used to differ - the
+ * dashboard offered "weekdays", which the engine cannot express, and omitted
+ * fortnightly and monthly - so a schedule designed here could not be applied.
+ */
+var CADENCES = {
+  daily: { label: "Daily", days: 1 },
+  weekly: { label: "Weekly", days: 7 },
+  fortnightly: { label: "Fortnightly", days: 14 },
+  monthly: { label: "Monthly", days: 30 }
+};
+
 var DEFAULT_SCHEDULE = {
-  enabled: true,
-  cadence: "daily",
-  time: "22:00",
+  enabled: false,
+  cadence: "weekly",
+  time: "09:00",
   zone: "IST",
-  batch: 3,
+  batch: 1,
+  // The engine's spend guards, mirrored so the dashboard cannot describe a
+  // schedule the engine would refuse to run.
+  maxPending: 3,
+  budgetUsd: 20,
   autoQA: true,
   autoPackage: true,
   handoff: true
@@ -155,14 +171,50 @@ function seedBooks() {
   });
 }
 
+/**
+ * Continuity facts derived from the catalogue rather than invented.
+ *
+ * Only series with more than one title get a bible entry, because continuity
+ * is a property of a series - a standalone book has nothing to stay consistent
+ * WITH. The page used to show two hand-written facts about books that were
+ * demo data, which told you nothing about your own catalogue.
+ */
+function seedFacts() {
+  var books = seedBooks();
+  var bySeries = Object.create(null);
+
+  books.forEach(function (book) {
+    if (!bySeries[book.series]) bySeries[book.series] = [];
+    bySeries[book.series].push(book);
+  });
+
+  var facts = [];
+  var now = Date.now();
+
+  Object.keys(bySeries).forEach(function (series) {
+    var titles = bySeries[series];
+    if (titles.length < 2) return;
+
+    facts.push({
+      id: uid("ft"),
+      text:
+        series + " spans " + titles.length + " titles (" +
+        titles.map(function (b) { return b.title; }).join(", ") +
+        ") — terminology and any recurring names must match across all of them.",
+      bookId: titles[0].id,
+      series: series,
+      createdAt: now - facts.length * 3600000,
+    });
+  });
+
+  return facts;
+}
+
 function seedState() {
   return {
     schema: SCHEMA_VERSION,
     books: seedBooks(),
-    facts: [
-      { id: "ft_1", text: "Ravana's court is seated on the Pushpak throne in Lanka.", bookId: "bk_seed_5", createdAt: Date.now() - 172800000 },
-      { id: "ft_2", text: "Gemstone potency tables are shared across the Gemstone Sciences series.", bookId: "bk_seed_1", createdAt: Date.now() - 86400000 }
-    ],
+    facts: seedFacts(),
     activity: [],
     schedule: clone(DEFAULT_SCHEDULE),
     settings: clone(DEFAULT_SETTINGS),
@@ -426,6 +478,20 @@ function isUntouchedLegacyDemo(raw) {
   });
 }
 
+function normaliseSchedule(raw) {
+  var schedule = Object.assign(clone(DEFAULT_SCHEDULE), raw || {});
+
+  // "weekdays" existed only in the old dashboard; map it to the nearest thing
+  // the engine can actually run rather than silently keeping a dead value.
+  if (!CADENCES[schedule.cadence]) schedule.cadence = "weekly";
+
+  schedule.batch = clamp(toInt(schedule.batch, 1), 1, 20);
+  schedule.maxPending = clamp(toInt(schedule.maxPending, 3), 1, 20);
+  schedule.budgetUsd = Math.max(0, toNum(schedule.budgetUsd, 20));
+  if (!/^\d{2}:\d{2}$/.test(String(schedule.time))) schedule.time = "09:00";
+  return schedule;
+}
+
 function normaliseState(raw) {
   if (!raw || typeof raw !== "object") return null;
 
@@ -478,7 +544,7 @@ function normaliseState(raw) {
         message: String(a.message || "")
       };
     }),
-    schedule: Object.assign(clone(DEFAULT_SCHEDULE), raw.schedule || {}),
+    schedule: normaliseSchedule(raw.schedule),
     settings: Object.assign(clone(DEFAULT_SETTINGS), raw.settings || {}),
     lastReport: raw.lastReport || null,
     lastValidation: raw.lastValidation || null
@@ -666,15 +732,20 @@ function zoneLabel(id) {
 }
 
 function nextRunAt(schedule, from) {
+  if (!schedule || !schedule.enabled) return null;
+
   var now = from || Date.now();
   var offset = zoneOffset(schedule.zone) * 60000;
-  var parts = String(schedule.time || "22:00").split(":");
-  var hour = clamp(toInt(parts[0], 22), 0, 23);
+  var parts = String(schedule.time || "09:00").split(":");
+  var hour = clamp(toInt(parts[0], 9), 0, 23);
   var minute = clamp(toInt(parts[1], 0), 0, 59);
+  var cadence = CADENCES[schedule.cadence] || CADENCES.weekly;
   var local = new Date(now + offset);
 
-  for (var day = 0; day < 14; day++) {
-    var candidateLocal = Date.UTC(
+  // Walk forward a day at a time until the first slot that is both in the
+  // future and lands on a day this cadence runs.
+  for (var day = 0; day <= 62; day++) {
+    var candidate = Date.UTC(
       local.getUTCFullYear(),
       local.getUTCMonth(),
       local.getUTCDate() + day,
@@ -682,13 +753,19 @@ function nextRunAt(schedule, from) {
       minute
     );
 
-    var instant = candidateLocal - offset;
+    var instant = candidate - offset;
     if (instant <= now) continue;
 
-    var weekday = new Date(candidateLocal).getUTCDay();
+    var at = new Date(candidate);
 
-    if (schedule.cadence === "weekdays" && (weekday === 0 || weekday === 6)) continue;
-    if (schedule.cadence === "weekly" && weekday !== 1) continue;
+    if (schedule.cadence === "weekly" && at.getUTCDay() !== 1) continue;
+    if (schedule.cadence === "fortnightly") {
+      if (at.getUTCDay() !== 1) continue;
+      // Every other Monday, anchored to ISO week parity so it is stable.
+      var week = Math.floor(candidate / (7 * 86400000));
+      if (week % 2 !== 0) continue;
+    }
+    if (schedule.cadence === "monthly" && at.getUTCDate() !== 1) continue;
 
     return instant;
   }
@@ -1265,12 +1342,24 @@ function renderScheduler() {
     metricCard("Next run", state.schedule.enabled && next ? countdown(next) : "—",
       next ? new Date(next).toLocaleString() : "Scheduler disabled"),
     metricCard("Batch size", String(state.schedule.batch), "books per cycle"),
-    metricCard("Timezone", state.schedule.zone, zoneLabel(state.schedule.zone))
+    metricCard(
+      "Spend guard",
+      "$" + state.schedule.budgetUsd,
+      "per 30 days · stops at " + state.schedule.maxPending + " awaiting approval",
+    )
   ].join("");
 
-  $("schedCadence").value = state.schedule.cadence;
+  var cadenceSelect = $("schedCadence");
+  if (cadenceSelect.options.length !== Object.keys(CADENCES).length) {
+    cadenceSelect.innerHTML = Object.keys(CADENCES).map(function (id) {
+      return '<option value="' + id + '">' + escapeHTML(CADENCES[id].label) + "</option>";
+    }).join("");
+  }
+  cadenceSelect.value = state.schedule.cadence;
   $("schedTime").value = state.schedule.time;
   $("schedBatch").value = state.schedule.batch;
+  $("schedMaxPending").value = state.schedule.maxPending;
+  $("schedBudget").value = state.schedule.budgetUsd;
   $("schedEnabled").checked = state.schedule.enabled;
   $("schedAutoQA").checked = state.schedule.autoQA;
   $("schedAutoPackage").checked = state.schedule.autoPackage;
@@ -1284,6 +1373,8 @@ function renderScheduler() {
   }
   zoneSelect.value = state.schedule.zone;
 
+  $("scheduleCommand").textContent = scheduleCommand();
+
   $("schedulePlan").innerHTML = plan.length
     ? plan.map(function (book, i) {
         return statRow(
@@ -1293,6 +1384,34 @@ function renderScheduler() {
         );
       }).join("")
     : '<p class="muted small">Every title is either released or blocked — nothing to schedule.</p>';
+}
+
+/**
+ * The exact commands that make these settings real.
+ *
+ * This page designs a schedule; the engine runs it. A browser cannot write to
+ * your machine's crontab, so rather than pretend the toggle above starts
+ * anything, it emits the two commands that do.
+ */
+function scheduleCommand() {
+  var sched = state.schedule;
+
+  var args = [
+    "--cadence " + sched.cadence,
+    "--time " + sched.time,
+    "--max-pending " + sched.maxPending,
+    "--budget " + sched.budgetUsd
+  ];
+  if (!sched.enabled) args.push("--off");
+
+  return [
+    "cd engine",
+    "node src/cli.js schedule " + args.join(" "),
+    "./scripts/install-cron.sh",
+    "",
+    "# check what cron will decide, without waiting for it:",
+    "node src/cli.js should-run"
+  ].join("\n");
 }
 
 function renderBlueprints() {
@@ -1323,11 +1442,23 @@ function renderMemory() {
 
   var seriesNames = Object.keys(seriesMap);
 
+  // Continuity only means something across a series, so count multi-title
+  // series separately from standalones.
+  var multi = seriesNames.filter(function (name) { return seriesMap[name].books > 1; });
+  var standalone = seriesNames.length - multi.length;
+  var linked = state.facts.filter(function (f) { return f.bookId; }).length;
+
   $("memoryMetrics").innerHTML = [
-    metricCard("Continuity facts", String(state.facts.length), "tracked across the library"),
-    metricCard("Series bibles", String(seriesNames.length), "active series"),
-    metricCard("Linked books", String(state.facts.filter(function (f) { return f.bookId; }).length), "facts bound to a title"),
-    metricCard("Auto extraction", state.schedule.autoQA ? "ON" : "OFF", "runs with QA")
+    metricCard("Continuity facts", String(state.facts.length), linked + " bound to a title"),
+    metricCard("Series bibles", String(multi.length), standalone + " standalone title(s)"),
+    metricCard(
+      "Largest series",
+      multi.length
+        ? String(Math.max.apply(null, multi.map(function (n) { return seriesMap[n].books; })))
+        : "—",
+      multi.length ? "titles to keep consistent" : "no multi-book series yet",
+    ),
+    metricCard("Books covered", String(new Set(state.facts.map(function (f) { return f.bookId; }).filter(Boolean)).size) + " / " + state.books.length, "have at least one fact")
   ].join("");
 
   var select = $("factBook");
@@ -1354,10 +1485,18 @@ function renderMemory() {
     : emptyRow(5, "No continuity facts recorded yet.");
 
   $("seriesRows").innerHTML = seriesNames.length
-    ? seriesNames.sort().map(function (name) {
-        var entry = seriesMap[name];
-        return statRow(name, "<strong>" + entry.books + " books · " + entry.facts + " facts</strong>");
-      }).join("")
+    ? seriesNames
+        .sort(function (a, b) { return seriesMap[b].books - seriesMap[a].books || a.localeCompare(b); })
+        .map(function (name) {
+          var entry = seriesMap[name];
+          var needsWork = entry.books > 1 && entry.facts === 0;
+          return statRow(
+            name,
+            "<strong>" + entry.books + " book" + (entry.books === 1 ? "" : "s") + "</strong> · " +
+              entry.facts + " fact" + (entry.facts === 1 ? "" : "s") +
+              (needsWork ? " " + pill("NO BIBLE", "warn") : entry.books === 1 ? ' <span class="small muted">standalone</span>' : ""),
+          );
+        }).join("")
     : '<p class="muted small">No series yet.</p>';
 }
 
@@ -2302,6 +2441,18 @@ var ACTIONS = {
     render();
     toast("Activity log cleared.");
   },
+  "copy-schedule-command": function () {
+    var text = scheduleCommand();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { toast("Commands copied.", "ok"); },
+        function () { toast("Could not copy — select the text instead.", "warn"); },
+      );
+    } else {
+      toast("Clipboard unavailable — select the text instead.", "warn");
+    }
+  },
+
   "reset-schedule": function () {
     state.schedule = clone(DEFAULT_SCHEDULE);
     save();
@@ -2383,16 +2534,18 @@ $("scheduleForm").addEventListener("submit", function (event) {
 
   error.textContent = "";
 
-  state.schedule = {
+  state.schedule = normaliseSchedule({
     enabled: $("schedEnabled").checked,
     cadence: $("schedCadence").value,
     time: time,
     zone: $("schedZone").value,
     batch: batch,
+    maxPending: toInt($("schedMaxPending").value, 3),
+    budgetUsd: toNum($("schedBudget").value, 20),
     autoQA: $("schedAutoQA").checked,
     autoPackage: $("schedAutoPackage").checked,
     handoff: $("schedHandoff").checked
-  };
+  });
 
   log("scheduler", "Schedule saved: " + state.schedule.cadence + " at " + time + " " + state.schedule.zone + ".");
   save();

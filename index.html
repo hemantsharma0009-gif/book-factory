@@ -220,9 +220,10 @@
         <label class="field">
           <span>Cadence</span>
           <select id="schedCadence" class="input">
-            <option value="daily">Every day</option>
-            <option value="weekdays">Weekdays only</option>
-            <option value="weekly">Weekly (Monday)</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="fortnightly">Fortnightly</option>
+            <option value="monthly">Monthly</option>
           </select>
         </label>
 
@@ -239,6 +240,16 @@
         <label class="field">
           <span>Books per cycle</span>
           <input id="schedBatch" class="input" type="number" min="1" max="20" step="1" required>
+        </label>
+
+        <label class="field">
+          <span>Stop at this many awaiting approval</span>
+          <input id="schedMaxPending" class="input" type="number" min="1" max="20" step="1" required>
+        </label>
+
+        <label class="field">
+          <span>Budget per 30 days ($)</span>
+          <input id="schedBudget" class="input" type="number" min="0" step="1" required>
         </label>
       </div>
 
@@ -260,6 +271,19 @@
     <h2>Next cycle plan</h2>
     <p class="muted small">Books the next run would pick up, in queue order.</p>
     <div id="schedulePlan"></div>
+  </div>
+
+  <div class="section card">
+    <h2>Apply this to the engine</h2>
+    <p class="muted small">
+      The browser cannot write to your machine's cron, so this page is where the
+      schedule is designed and the engine is where it runs. Paste these two
+      commands in <code>engine/</code> to make the settings above real.
+    </p>
+    <pre id="scheduleCommand" class="runlog" style="white-space:pre-wrap"></pre>
+    <div class="actions">
+      <button type="button" class="btn" data-action="copy-schedule-command">Copy commands</button>
+    </div>
   </div>
 
 </section>
