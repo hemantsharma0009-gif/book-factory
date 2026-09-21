@@ -118,6 +118,11 @@ as good as it was. Do not reuse the rejected title or a variation of it.`,
  * model returns, so a dry run exercises the same downstream code paths (and
  * the keyword validator) as a real one.
  */
+/** "a" or "an" - "a adventure story" in a listing reads as a typo, because it is. */
+function article(word) {
+  return /^[aeiou]/i.test(String(word)) ? "an" : "a";
+}
+
 export function stubPlan({ genre, angle, chapters, variant = 0 }) {
   const titles = {
     adventure: ["Nine Days Above the Treeline", "The Long Way Down"],
@@ -134,12 +139,21 @@ export function stubPlan({ genre, angle, chapters, variant = 0 }) {
     technology: ["The Machine That Reads Your Mail", "Ask Better Questions"],
   };
   const pick = titles[genre.id] || ["The Working Draft", "Second Pass"];
+  const fiction = genre.kind === "fiction";
 
   return {
       title: pick[variant % pick.length],
-      subtitle: `A practical guide to ${angle}`,
-      premise: `A working treatment of ${angle} for readers who want something they can apply.`,
-      audience: `Readers new to ${genre.name} who want a concrete starting point.`,
+      // A how-to subtitle on a novel would sail through every downstream check
+      // and produce a KDP sheet that describes the wrong kind of book.
+      // A colon, not "a novel of X" - the angles are bare noun phrases ("lost
+      // city"), and the genitive form reads as a typo for half of them.
+      subtitle: fiction ? `A novel: ${angle}` : `A practical guide to ${angle}`,
+      premise: fiction
+        ? `A story of ${angle}, told through the people it costs the most.`
+        : `A working treatment of ${angle} for readers who want something they can apply.`,
+      audience: fiction
+        ? `Readers who want ${article(genre.name)} ${genre.name.toLowerCase()} story with real stakes.`
+        : `Readers new to ${genre.name} who want a concrete starting point.`,
       toneGuide: "Direct, concrete, warm. Short sentences. No hype.",
       styleRules: [
         "Write in second person for instructions, third for examples.",

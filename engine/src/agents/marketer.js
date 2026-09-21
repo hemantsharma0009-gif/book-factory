@@ -58,10 +58,14 @@ Produce:
     prompt,
     system: SYSTEM,
     stub: () => ({
-      description: `${plan.premise}\n\nThis book covers ${plan.chapters.length} chapters of practical material for ${plan.audience.toLowerCase()} Written to be read once and used many times.`,
+      description: genre.kind === "fiction"
+        ? `${plan.premise}\n\nA novel in ${plan.chapters.length} chapters for ${plan.audience.toLowerCase()}`
+        : `${plan.premise}\n\nThis book covers ${plan.chapters.length} chapters of practical material for ${plan.audience.toLowerCase()} Written to be read once and used many times.`,
       shortPitch: `${plan.title}: ${plan.subtitle}`.slice(0, 139),
       keywords: stubKeywords(plan, genre),
-      categories: [`Nonfiction > ${genre.name}`, `Reference > ${genre.name}`],
+      categories: genre.kind === "fiction"
+        ? [`Fiction > ${genre.name}`, `Fiction > ${genre.name} > General`]
+        : [`Nonfiction > ${genre.name}`, `Reference > ${genre.name}`],
       priceUsd: DEFAULTS.priceUsd,
       priceRationale: "Priced at the top of the 70% royalty band for a full-length title.",
       coverBrief: {

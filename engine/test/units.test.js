@@ -158,6 +158,8 @@ test("charts carry direct labels and a data table", () => {
 function baseBook(overrides) {
   return {
     id: "bk_test",
+    genre: overrides.genre,
+    genreName: overrides.genreName,
     title: "A Title",
     subtitle: "A Subtitle",
     author: "Author",
@@ -165,12 +167,60 @@ function baseBook(overrides) {
     listing: {
       description: overrides.description || "A description.",
       keywords: overrides.keywords || ["one two", "three four", "five six", "seven eight", "nine ten", "eleven twelve", "thirteen"],
-      categories: ["A > B"],
+      categories: overrides.categories || ["A > B"],
       priceUsd: overrides.priceUsd || 9.99,
       priceRationale: "because",
     },
   };
 }
+
+test("kdp pack flags a novel filed on the nonfiction shelf", () => {
+  // Amazon does not make a category easy to change once a title is live, and a
+  // novel shelved under Reference is shown to the wrong readers from day one.
+  const book = baseBook({
+    genre: "adventure",
+    genreName: "Adventure",
+    categories: ["Nonfiction > Adventure", "Reference > Adventure"],
+  });
+  const pack = buildKdpPack({ book, epubName: "x.epub" });
+  assert.ok(
+    pack.warnings.some((w) => /Adventure is fiction/.test(w)),
+    `expected a shelf warning, got: ${pack.warnings.join(" | ")}`,
+  );
+});
+
+test("kdp pack accepts categories that match the genre", () => {
+  for (const [genre, categories] of [
+    ["adventure", ["Fiction > Adventure"]],
+    ["cooking", ["Nonfiction > Cooking", "Reference > Cooking"]],
+  ]) {
+    const pack = buildKdpPack({ book: baseBook({ genre, categories }), epubName: "x.epub" });
+    assert.equal(
+      pack.warnings.filter((w) => /wrong readers/.test(w)).length,
+      0,
+      `${genre} should not warn on ${categories.join(", ")}`,
+    );
+  }
+});
+
+test("kdp pack does not warn when only one category crosses the shelf", () => {
+  // A single crossover category is a deliberate reach for a second audience,
+  // not a mis-file; warning on it would train you to ignore the warnings.
+  const book = baseBook({
+    genre: "adventure",
+    categories: ["Fiction > Adventure", "Nonfiction > Adventure"],
+  });
+  const pack = buildKdpPack({ book, epubName: "x.epub" });
+  assert.equal(pack.warnings.filter((w) => /wrong readers/.test(w)).length, 0);
+});
+
+test("a stub plan for a fiction genre does not read like a how-to", () => {
+  const fiction = stubPlan({ genre: { id: "adventure", name: "Adventure", kind: "fiction" }, angle: "a lost city", chapters: 3 });
+  assert.doesNotMatch(fiction.subtitle, /practical guide/i);
+
+  const nonfiction = stubPlan({ genre: { id: "cooking", name: "Cooking", kind: "nonfiction" }, angle: "one-pan dinners", chapters: 3 });
+  assert.match(nonfiction.subtitle, /practical guide/i);
+});
 
 test("generic-title guard rejects titles that name their own genre", () => {
   const genre = { name: "Mystery", id: "mystery", kind: "fiction" };
@@ -405,4 +455,18 @@ test("sample mode writes fewer chapters but plans the whole book", async () => {
 
   delete process.env.BOOK_FACTORY_DRY_RUN;
   delete process.env.BOOK_FACTORY_DATA;
+});
+
+test("a stub fiction listing reads as English, not as a template", () => {
+  // "a adventure story" and "A novel of lost city" both shipped into a KDP
+  // sheet before these were fixed, and a listing is the first thing a buyer
+  // reads.
+  const plan = stubPlan({
+    genre: { id: "adventure", name: "Adventure", kind: "fiction" },
+    angle: "lost city",
+    chapters: 3,
+  });
+  assert.doesNotMatch(plan.audience, /\ba adventure\b/);
+  assert.match(plan.audience, /\ban adventure\b/);
+  assert.doesNotMatch(plan.subtitle, /novel of lost city/);
 });
