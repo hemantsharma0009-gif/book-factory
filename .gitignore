@@ -1,3 +1,5 @@
 node_modules/
 engine/library/
 *.log
+engine/logs/
+engine/.env

@@ -18,7 +18,7 @@ import * as store from "./store.js";
 import { produceBook, slug } from "./pipeline.js";
 import { buildKdpPack } from "./publish/kdp.js";
 import { publishToGumroad } from "./publish/gumroad.js";
-import { CADENCES, nextRunAt, isDue } from "./scheduler.js";
+import { CADENCES, nextRunAt, isDue, shouldRun } from "./scheduler.js";
 import { GENRES } from "./genres.js";
 
 const args = process.argv.slice(2);
@@ -65,6 +65,7 @@ async function main() {
       const next = nextRunAt(state.schedule, state.runs[0]?.at);
       log(`\nSchedule: ${state.schedule?.enabled ? `${CADENCES[state.schedule.cadence].label} at ${state.schedule.time}` : "off"}`);
       if (next) log(`Next run: ${new Date(next).toLocaleString()}`);
+      log(`Cron verdict: ${shouldRun(state).reason}`);
       break;
     }
 
@@ -153,10 +154,14 @@ async function main() {
           cadence,
           time: String(flag("time", "09:00")),
           images: String(flag("images", "charts")),
+          // Guards for unattended runs; see scheduler.shouldRun.
+          maxPending: Number(flag("max-pending", s.schedule?.maxPending ?? 3)),
+          monthlyBudgetUsd: Number(flag("budget", s.schedule?.monthlyBudgetUsd ?? 20)),
         };
       });
       const state = await store.load();
       log(`Schedule: ${state.schedule.enabled ? `${CADENCES[cadence].label} at ${state.schedule.time}` : "disabled"}`);
+      log(`Guards: stop at ${state.schedule.maxPending} book(s) awaiting approval, $${state.schedule.monthlyBudgetUsd}/30 days`);
       break;
     }
 
@@ -165,6 +170,15 @@ async function main() {
       const due = isDue(state.schedule, state.runs[0]?.at);
       log(due ? "due" : "not due");
       process.exit(due ? 0 : 1);
+      break;
+    }
+
+    // What cron gates on: due AND within the backlog and budget guards.
+    case "should-run": {
+      const state = await store.load();
+      const verdict = shouldRun(state);
+      log(verdict.reason);
+      process.exit(verdict.run ? 0 : 1);
       break;
     }
 
@@ -182,7 +196,9 @@ async function main() {
   pack <id>                       write the KDP upload sheet
   publish <id> --gumroad [--dry-run]
   schedule --cadence daily|weekly|fortnightly|monthly --time HH:MM [--off]
-  next-due                        exit 0 when a run is due (for cron)`);
+           [--max-pending n] [--budget usd]
+  should-run                      exit 0 when cron should generate (due + guards)
+  next-due                        exit 0 when a run is due, ignoring guards`);
   }
 }
 

@@ -70,19 +70,51 @@ approve <id> | reject <id> [reason]
 pack <id>                        write the KDP upload sheet
 publish <id> --gumroad [--dry-run]
 schedule --cadence daily|weekly|fortnightly|monthly --time HH:MM [--off]
-next-due                         exit 0 when a run is due (for cron)
+         [--max-pending n] [--budget usd]
+should-run                       exit 0 when cron should generate (due + guards)
+next-due                         exit 0 when a run is due, ignoring guards
 ```
 
 ### Scheduling
 
-The engine does not daemonise. Drive it from cron:
+The engine does not daemonise. Set the cadence, then install the cron entry:
 
-```cron
-0 * * * * cd /path/to/engine && node src/cli.js next-due && node src/cli.js generate
+```bash
+node src/cli.js schedule --cadence daily --time 09:00 --max-pending 3 --budget 20
+echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env && chmod 600 .env
+./scripts/install-cron.sh
 ```
 
-`next-due` exits 0 only when the configured cadence says a run is due, so the
-hourly cron does nothing until then.
+That installs one hourly entry. It exits quietly unless a run is genuinely due,
+so the cadence lives in the engine's own config rather than in crontab syntax —
+change it with `schedule` and the cron entry stays as it is.
+
+**An unattended job that spends money needs to be able to stop itself.** Two
+guards do that, and `should-run` enforces both:
+
+| Guard | Default | Why |
+|---|---|---|
+| `--max-pending` | 3 | Books awaiting approval are books you have paid for and not read. If generation outruns approval, the pipeline quietly wastes money — so it stops until you catch up. |
+| `--budget` | $20 / 30 days | A hard ceiling on rolling spend, whatever else goes wrong. |
+
+The wrapper also takes a **lock**, so a slow run can never overlap the next
+hourly tick and pay twice, and loads the API key from `engine/.env` because cron
+runs with almost no environment.
+
+Check what cron will decide, without waiting for it:
+
+```bash
+node src/cli.js should-run   # prints the reason; exit 0 means it would run
+node src/cli.js status       # includes the cron verdict
+tail -f logs/scheduled.log   # what it actually did
+```
+
+Remove it with `./scripts/install-cron.sh --remove`.
+
+**On a server rather than a laptop:** cron only fires while the machine is
+awake, so a daily run on a closed laptop will simply not happen. The hourly
+entry makes that self-correcting — the run fires at the next hour the machine is
+on — but a machine that is off all day still produces nothing.
 
 ## Genre rotation
 
