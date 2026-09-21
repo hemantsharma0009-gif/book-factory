@@ -130,6 +130,8 @@ function seedBooks() {
       revenue: r[9],
       queued: r[3] === "Chapters",
       released: false,
+      storefronts: { amazon: "", gumroad: "", other: "" },
+      publishedAt: null,
       issues: [],
       createdAt: now - (10 - i) * 86400000,
       updatedAt: now - (10 - i) * 3600000
@@ -323,6 +325,10 @@ function normaliseBook(raw, index) {
     revenue: Math.max(0, toNum(book.revenue, 0)),
     queued: book.queued === true,
     released: book.released === true,
+    // Where the book is actually on sale. A title with any of these is LIVE,
+    // whatever the pipeline thinks - a published book is not "in production".
+    storefronts: normaliseStorefronts(book.storefronts),
+    publishedAt: toInt(book.publishedAt, 0) || null,
     issues: Array.isArray(book.issues) ? book.issues.filter(Boolean).map(function (issue) {
       return {
         id: String(issue.id || uid("is")),
@@ -333,6 +339,34 @@ function normaliseBook(raw, index) {
     createdAt: toInt(book.createdAt, Date.now()),
     updatedAt: toInt(book.updatedAt, Date.now())
   };
+}
+
+var STORES = [
+  { id: "amazon", label: "Amazon / KDP" },
+  { id: "gumroad", label: "Gumroad" },
+  { id: "other", label: "Other store" },
+];
+
+function normaliseStorefronts(raw) {
+  var source = raw && typeof raw === "object" ? raw : {};
+  var out = {};
+  STORES.forEach(function (store) {
+    var value = String(source[store.id] || "").trim();
+    // Only keep something that looks like a link, so a stray word cannot
+    // silently mark a book as published.
+    out[store.id] = /^https?:\/\//i.test(value) ? value : "";
+  });
+  return out;
+}
+
+function liveStores(book) {
+  var stores = book && book.storefronts;
+  if (!stores) return [];
+  return STORES.filter(function (store) { return stores[store.id]; });
+}
+
+function isLive(book) {
+  return liveStores(book).length > 0;
 }
 
 function normaliseState(raw) {
@@ -427,7 +461,7 @@ function touch(book) { book.updatedAt = Date.now(); }
    --------------------------------------------------------- */
 
 function progressOf(book) {
-  if (book.released) return 100;
+  if (isLive(book) || book.released) return 100;
 
   var i = stageIndex(book.stage);
   var step = 100 / (STAGES.length - 1);
@@ -441,6 +475,8 @@ function progressOf(book) {
 }
 
 function statusOf(book) {
+  // A book on sale is finished, whatever stage the pipeline last recorded.
+  if (isLive(book)) return "LIVE";
   if (book.issues.length) return "BLOCKED";
   if (book.released) return "RELEASED";
   if (book.stage === "Publishing") return "READY";
@@ -449,6 +485,7 @@ function statusOf(book) {
 }
 
 function statusClass(status) {
+  if (status === "LIVE") return "ok";
   if (status === "READY" || status === "RELEASED") return "ok";
   if (status === "RUNNING") return "blue";
   if (status === "BLOCKED") return "bad";
@@ -467,6 +504,13 @@ function metadataComplete(book) {
 }
 
 function packageState(book) {
+  if (isLive(book)) {
+    return {
+      epub: "LIVE", pdf: "LIVE", metadata: "LIVE", zip: "LIVE",
+      validator: "PASS", blockers: [],
+    };
+  }
+
   var i = stageIndex(book.stage);
   var packIndex = STAGES.indexOf("Packaging");
   var editIndex = STAGES.indexOf("Editing");
@@ -493,6 +537,7 @@ function packageState(book) {
 }
 
 function artifactClass(value) {
+  if (value === "LIVE") return "ok";
   if (value === "READY" || value === "PASS") return "ok";
   if (value === "PIPELINE") return "blue";
   if (value === "MISSING" || value === "FAIL") return "bad";
@@ -506,7 +551,7 @@ function estimatedCost(book) {
 
 function summary() {
   var books = state.books;
-  var counts = { READY: 0, RUNNING: 0, PIPELINE: 0, BLOCKED: 0, RELEASED: 0 };
+  var counts = { LIVE: 0, READY: 0, RUNNING: 0, PIPELINE: 0, BLOCKED: 0, RELEASED: 0 };
 
   books.forEach(function (b) { counts[statusOf(b)] += 1; });
 
@@ -597,7 +642,7 @@ function countdown(ts) {
 
 function nextCyclePlan() {
   var eligible = state.books.filter(function (b) {
-    return !b.released && b.stage !== "Publishing" && !b.issues.length;
+    return !isLive(b) && !b.released && b.stage !== "Publishing" && !b.issues.length;
   });
 
   eligible.sort(function (a, b) {
@@ -615,7 +660,7 @@ function nextCyclePlan() {
 
 function eligibleJobs() {
   return state.books
-    .filter(function (b) { return b.queued && !b.released && b.stage !== "Publishing" && !b.issues.length; })
+    .filter(function (b) { return b.queued && !isLive(b) && !b.released && b.stage !== "Publishing" && !b.issues.length; })
     .sort(function (a, b) {
       if (a.priority !== b.priority) return a.priority === "high" ? -1 : 1;
       return a.updatedAt - b.updatedAt;
@@ -646,7 +691,7 @@ function runQA(book) {
 
 /** Advance a single book by one unit of work. Returns a log line, or null. */
 function stepBook(book) {
-  if (book.issues.length || book.released || book.stage === "Publishing") return null;
+  if (isLive(book) || book.issues.length || book.released || book.stage === "Publishing") return null;
 
   if (book.stage === "Chapters" && book.chapters.done < book.chapters.total) {
     book.chapters.done += 1;
@@ -919,15 +964,17 @@ function renderDashboard() {
   var next = nextRunAt(state.schedule);
 
   $("dashboardMetrics").innerHTML = [
-    metricCard("Active books", String(s.total),
-      s.counts.PIPELINE + " in pipeline · " + s.counts.READY + " ready · " + s.counts.RELEASED + " released"),
+    metricCard("Catalogue", String(s.total),
+      s.counts.LIVE + " on sale · " + s.counts.PIPELINE + " in pipeline · " + s.counts.READY + " ready"),
     metricCard("Queued jobs", String(s.queued), ui.running ? "Run in progress" : "Queue idle"),
     metricCard("Next cycle", state.schedule.enabled && next ? countdown(next) : "OFF",
       state.schedule.enabled && next ? state.schedule.time + " " + state.schedule.zone : "Scheduler disabled"),
     metricCard("QA blockers", String(s.counts.BLOCKED), s.counts.BLOCKED ? "Needs review" : "All clear")
   ].join("");
 
-  var focus = eligibleJobs()[0] || state.books.filter(function (b) { return !b.released; })[0];
+  var focus =
+    eligibleJobs()[0] ||
+    state.books.filter(function (b) { return !isLive(b) && !b.released; })[0];
 
   $("dashboardPipeline").innerHTML = focus
     ? pipelineHTML(focus.stage, focus.released)
@@ -935,7 +982,9 @@ function renderDashboard() {
 
   $("pipelineSummary").textContent = focus
     ? "Tracking " + focus.title + " — stage " + focus.stage + " (" + progressOf(focus) + "%)"
-    : "No active book. Add one from the library or a blueprint.";
+    : s.counts.LIVE === s.total && s.total > 0
+      ? "Every title in the catalogue is on sale. Add a new book to start production."
+      : "No active book. Add one from the library or a blueprint.";
 
   var blocked = s.counts.BLOCKED;
 
@@ -963,7 +1012,7 @@ function renderDashboard() {
     statRow("PDF ready", "<strong>" + artifacts.pdf + " / " + s.total + "</strong>"),
     statRow("Metadata complete", "<strong>" + artifacts.metadata + " / " + s.total + "</strong>"),
     statRow("Packages validated", pill(s.passing + " PASS", s.passing ? "ok" : "warn")),
-    statRow("Released titles", "<strong>" + s.counts.RELEASED + "</strong>")
+    statRow("Titles on sale", "<strong>" + s.counts.LIVE + "</strong>")
   ].join("");
 
   var jobs = state.books.slice().sort(function (a, b) { return b.updatedAt - a.updatedAt; }).slice(0, 6);
@@ -1019,6 +1068,7 @@ function renderLibrary() {
     ? filtered.map(function (book) {
         var status = statusOf(book);
         var pct = progressOf(book);
+        var live = isLive(book);
 
         return '<article class="book-card">' +
           '<div class="spine" style="background:' + spineColor(book.category) + '"></div>' +
@@ -1030,13 +1080,23 @@ function renderLibrary() {
           '<div class="book-meta">' + escapeHTML(book.format) + " · " + book.chapters.done + "/" + book.chapters.total +
             " chapters · " + formatNumber(book.words.done) + " words</div>" +
           progressBar(pct, status === "READY" || status === "RELEASED") +
-          '<div class="book-foot"><span class="small muted">' + pct + "% · " + escapeHTML(book.stage) + "</span>" +
+          '<div class="book-foot"><span class="small muted">' +
+            (live ? "On sale" : pct + "% · " + escapeHTML(book.stage)) + "</span>" +
             '<span class="small muted">' + relativeTime(book.updatedAt) + "</span></div>" +
+          (live
+            ? '<div class="chips">' + liveStores(book).map(function (store) {
+                return '<a class="chip" href="' + escapeHTML(book.storefronts[store.id]) +
+                  '" target="_blank" rel="noopener">' + escapeHTML(store.label) + " ↗</a>";
+              }).join("") + "</div>"
+            : "") +
           '<div class="actions">' +
             '<button type="button" class="btn tiny" data-action="view-book" data-id="' + escapeHTML(book.id) + '">View</button>' +
             '<button type="button" class="btn tiny" data-action="edit-book" data-id="' + escapeHTML(book.id) + '">Edit</button>' +
-            '<button type="button" class="btn tiny ' + (book.queued ? "" : "primary") + '" data-action="toggle-queue" data-id="' +
-              escapeHTML(book.id) + '">' + (book.queued ? "Dequeue" : "Queue") + "</button>" +
+            (live
+              ? ""
+              : '<button type="button" class="btn tiny ' + (book.queued ? "" : "primary") + '" data-action="toggle-queue" data-id="' +
+                escapeHTML(book.id) + '">' + (book.queued ? "Dequeue" : "Queue") + "</button>" +
+                '<button type="button" class="btn tiny" data-action="mark-live" data-id="' + escapeHTML(book.id) + '">Mark on sale</button>') +
           "</div>" +
           "</article>";
       }).join("")
@@ -1075,7 +1135,7 @@ function renderProduction() {
     return progressOf(b) - progressOf(a);
   });
 
-  if (ui.onlyActive) rows = rows.filter(function (b) { return b.queued; });
+  if (ui.onlyActive) rows = rows.filter(function (b) { return b.queued && !isLive(b); });
 
   $("productionTable").innerHTML = rows.length
     ? rows.map(function (book) {
@@ -1091,9 +1151,12 @@ function renderProduction() {
             '<div class="small muted">' + pct + "%</div></td>" +
           "<td>" + pill(status, statusClass(status)) + "</td>" +
           '<td class="nowrap">' +
-            '<button type="button" class="btn tiny" data-action="advance-book" data-id="' + escapeHTML(book.id) + '">Advance</button> ' +
-            '<button type="button" class="btn tiny" data-action="toggle-queue" data-id="' + escapeHTML(book.id) + '">' +
-              (book.queued ? "Dequeue" : "Queue") + "</button>" +
+            // A title that is already on sale has nothing left to advance.
+            (isLive(book)
+              ? '<span class="small muted">on sale</span>'
+              : '<button type="button" class="btn tiny" data-action="advance-book" data-id="' + escapeHTML(book.id) + '">Advance</button> ' +
+                '<button type="button" class="btn tiny" data-action="toggle-queue" data-id="' + escapeHTML(book.id) + '">' +
+                  (book.queued ? "Dequeue" : "Queue") + "</button>") +
           "</td>" +
           "</tr>";
       }).join("")
@@ -1209,7 +1272,8 @@ function renderPublishing() {
   var s = summary();
 
   $("publishingSummary").textContent =
-    s.passing + " of " + s.total + " packages pass validation · " + s.counts.RELEASED + " released";
+    s.counts.LIVE + " of " + s.total + " titles are on sale · " +
+    s.passing + " package(s) pass validation";
 
   $("publishingTable").innerHTML = state.books.length
     ? state.books.map(function (book) {
@@ -1221,7 +1285,8 @@ function renderPublishing() {
           "<td>" + pill(p.pdf, artifactClass(p.pdf)) + "</td>" +
           "<td>" + pill(p.metadata, artifactClass(p.metadata)) + "</td>" +
           "<td>" + pill(p.zip, artifactClass(p.zip)) + "</td>" +
-          "<td>" + pill(book.released ? "RELEASED" : p.validator, book.released ? "ok" : artifactClass(p.validator)) + "</td>" +
+          "<td>" + pill(isLive(book) ? "ON SALE" : book.released ? "RELEASED" : p.validator,
+            isLive(book) || book.released ? "ok" : artifactClass(p.validator)) + "</td>" +
           '<td class="small muted">' + (p.blockers.length ? escapeHTML(p.blockers.join("; ")) : "None") + "</td>" +
           "</tr>";
       }).join("")
@@ -1426,6 +1491,15 @@ function viewBook(id) {
       statRow("Estimated cost", "<strong>" + formatMoney(estimatedCost(book)) + "</strong>") +
       statRow("Revenue", "<strong>" + formatMoney(book.revenue) + "</strong>") +
       statRow("Last updated", "<strong>" + relativeTime(book.updatedAt) + "</strong>") +
+      (isLive(book)
+        ? statRow(
+            "On sale at",
+            liveStores(book).map(function (store) {
+              return '<a href="' + escapeHTML(book.storefronts[store.id]) +
+                '" target="_blank" rel="noopener">' + escapeHTML(store.label) + " ↗</a>";
+            }).join(" · "),
+          )
+        : "") +
       (book.description ? '<p class="small muted" style="margin-top:10px">' + escapeHTML(book.description) + "</p>" : "") +
     "</div>" +
 
@@ -1445,10 +1519,14 @@ function viewBook(id) {
       : "") +
 
     '<div class="actions section">' +
-      '<button type="button" class="btn primary" data-action="advance-book" data-id="' + escapeHTML(book.id) + '">Advance production</button>' +
+      (isLive(book)
+        ? ""
+        : '<button type="button" class="btn primary" data-action="advance-book" data-id="' + escapeHTML(book.id) + '">Advance production</button>') +
       '<button type="button" class="btn" data-action="edit-book" data-id="' + escapeHTML(book.id) + '">Edit</button>' +
-      '<button type="button" class="btn" data-action="toggle-queue" data-id="' + escapeHTML(book.id) + '">' +
-        (book.queued ? "Remove from queue" : "Add to queue") + "</button>" +
+      (isLive(book)
+        ? ""
+        : '<button type="button" class="btn" data-action="toggle-queue" data-id="' + escapeHTML(book.id) + '">' +
+          (book.queued ? "Remove from queue" : "Add to queue") + "</button>") +
       '<button type="button" class="btn danger" data-action="delete-book" data-id="' + escapeHTML(book.id) + '">Delete</button>' +
     "</div>"
   );
@@ -1470,7 +1548,8 @@ function editBook(id) {
     chapters: { total: 14, done: 0 },
     words: { done: 0, target: 45000 },
     priority: "normal",
-    revenue: 0
+    revenue: 0,
+    storefronts: normaliseStorefronts({}),
   };
 
   function options(list, selected) {
@@ -1511,6 +1590,16 @@ function editBook(id) {
       '<div class="field-row">' +
         '<label class="field"><span>Recorded revenue ($)</span><input class="input" name="revenue" type="number" min="0" step="1" value="' + draft.revenue + '"></label>' +
       "</div>" +
+
+      '<fieldset style="border:1px solid var(--border);border-radius:10px;padding:12px;margin:0 0 12px">' +
+        '<legend class="small muted" style="padding:0 6px">Already on sale? Paste the listing links</legend>' +
+        '<p class="small muted" style="margin:0 0 10px">A book with any link here is marked LIVE and is kept out of the production queue.</p>' +
+        STORES.map(function (store) {
+          return '<label class="field"><span>' + escapeHTML(store.label) + "</span>" +
+            '<input class="input" name="store_' + store.id + '" type="url" placeholder="https://…" value="' +
+            escapeHTML((draft.storefronts && draft.storefronts[store.id]) || "") + '"></label>';
+        }).join("") +
+      "</fieldset>" +
 
       '<label class="field"><span>Description (used for metadata validation)</span>' +
         '<textarea class="input" name="description" rows="3">' + escapeHTML(draft.description) + "</textarea></label>" +
@@ -1558,6 +1647,8 @@ function submitBookForm(book, form) {
     queued: false,
     released: false,
     issues: [],
+    storefronts: normaliseStorefronts({}),
+    publishedAt: null,
     createdAt: Date.now()
   };
 
@@ -1571,6 +1662,15 @@ function submitBookForm(book, form) {
   target_book.chapters = { total: total, done: done };
   target_book.words = { done: drafted, target: target };
   target_book.revenue = Math.max(0, toNum(data.get("revenue"), 0));
+
+  var storefronts = {};
+  STORES.forEach(function (store) {
+    storefronts[store.id] = String(data.get("store_" + store.id) || "").trim();
+  });
+  var wasLive = isLive(target_book);
+  target_book.storefronts = normaliseStorefronts(storefronts);
+  if (isLive(target_book) && !wasLive) target_book.publishedAt = Date.now();
+  if (!isLive(target_book)) target_book.publishedAt = null;
   target_book.description = String(data.get("description") || "").trim();
   target_book.updatedAt = Date.now();
 
@@ -1595,6 +1695,11 @@ function toggleQueue(id) {
   var book = findBook(id);
   if (!book) return;
 
+  if (isLive(book)) {
+    toast(book.title + " is already on sale — it does not belong in production.", "warn");
+    return;
+  }
+
   if (book.released || book.stage === "Publishing") {
     toast("That title has already finished production.", "warn");
     return;
@@ -1606,6 +1711,47 @@ function toggleQueue(id) {
   save();
   render();
   toast(book.queued ? "Queued " + book.title + "." : "Dequeued " + book.title + ".");
+}
+
+/**
+ * Record that a book is already on sale. Kept deliberately quick - most people
+ * have a handful of published titles to correct in one sitting, and making
+ * that a full form edit each time is why the dashboard stayed wrong.
+ */
+function markLive(id) {
+  var book = findBook(id);
+  if (!book) return;
+
+  var url = prompt(
+    "Paste the listing URL for “" + book.title + "”\n\n" +
+      "Amazon/KDP, Gumroad or any other store. Leave blank to cancel.",
+    "",
+  );
+  if (!url || !url.trim()) return;
+
+  var trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) {
+    toast("That does not look like a link — it needs to start with http.", "warn");
+    return;
+  }
+
+  var host = trimmed.toLowerCase();
+  var store = /amazon\.|amzn\.|kdp\./.test(host)
+    ? "amazon"
+    : /gumroad\./.test(host)
+      ? "gumroad"
+      : "other";
+
+  book.storefronts[store] = trimmed;
+  book.publishedAt = book.publishedAt || Date.now();
+  book.queued = false;
+  book.stage = "Publishing";
+  touch(book);
+
+  log("library", book.title + " marked as on sale.");
+  save();
+  render();
+  toast(book.title + " is now marked LIVE on " + store + ".", "ok");
 }
 
 function advanceBook(id) {
@@ -1779,7 +1925,7 @@ function packageBooks() {
   var packaged = 0;
 
   state.books.forEach(function (book) {
-    if (book.issues.length || book.released) return;
+    if (isLive(book) || book.issues.length || book.released) return;
     if (stageIndex(book.stage) < STAGES.indexOf("QA")) return;
     if (book.stage === "Packaging" || book.stage === "Publishing") return;
 
@@ -1798,7 +1944,7 @@ function releasePackages() {
   var released = [];
 
   state.books.forEach(function (book) {
-    if (book.released) return;
+    if (isLive(book) || book.released) return;
     if (packageState(book).validator !== "PASS") return;
     if (book.stage !== "Publishing") {
       book.stage = "Publishing";
@@ -1946,6 +2092,7 @@ var ACTIONS = {
   "edit-book": function (el) { editBook(el.dataset.id); },
   "delete-book": function (el) { deleteBook(el.dataset.id); },
   "toggle-queue": function (el) { toggleQueue(el.dataset.id); },
+  "mark-live": function (el) { markLive(el.dataset.id); },
   "advance-book": function (el) { advanceBook(el.dataset.id); },
   "resolve-issue": function (el) { resolveIssue(el.dataset.id, el.dataset.issue); },
   "use-blueprint": function (el) { useBlueprint(el.dataset.id); },
