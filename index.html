@@ -57,6 +57,15 @@
 
 <main class="main" id="main">
 
+<div class="card" id="catalogueBanner" hidden
+     style="border-color:var(--yellow);margin-bottom:14px">
+  <h3 style="margin:0 0 4px">Your library was out of date</h3>
+  <p class="small muted" id="catalogueBannerText" style="margin:0 0 10px"></p>
+  <div class="actions">
+    <button type="button" class="btn tiny" data-action="dismiss-catalogue-banner">Got it</button>
+  </div>
+</div>
+
 <header class="topbar">
   <div class="top-title">
     <button type="button" class="mobile-menu" id="menuToggle" aria-label="Toggle navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
@@ -201,6 +210,12 @@
         <tbody id="productionTable"></tbody>
       </table>
     </div>
+  </div>
+
+  <div class="section card" id="stageProgressCard">
+    <h2>Stage progress</h2>
+    <p class="muted small">Where each book in production has reached, stage by stage.</p>
+    <div id="stageProgress"></div>
   </div>
 
 </section>
@@ -402,6 +417,27 @@
       <table class="table">
         <thead><tr><th>Title</th><th>On sale at</th><th>Missing from</th><th>List price</th></tr></thead>
         <tbody id="gapsTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section card">
+    <h2>Seller listing status</h2>
+    <p class="muted small">Every title against every storefront, so a missing listing is obvious at a glance.</p>
+    <div class="table-wrap">
+      <table class="table" id="listingMatrix"></table>
+    </div>
+  </div>
+
+  <div class="section card">
+    <h2>Pricing and break-even</h2>
+    <p class="muted small" id="pricingNote"></p>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr><th>Title</th><th>Store</th><th>List price</th><th>Royalty</th><th>Net per sale</th><th>Sales to break even</th><th>Better price</th></tr>
+        </thead>
+        <tbody id="pricingTable"></tbody>
       </table>
     </div>
   </div>

@@ -10,7 +10,15 @@
    --------------------------------------------------------- */
 
 var APP_VERSION = "2.0";
-var SCHEMA_VERSION = 3;
+var SCHEMA_VERSION = 4;
+
+/**
+ * Bumped whenever the real catalogue changes. A stored library carrying an
+ * older value has the catalogue merged in rather than being left alone - the
+ * strict "untouched demo" test used before was too conservative, and stranded
+ * libraries showing published books as work in progress.
+ */
+var CATALOGUE_VERSION = "ledger-2026-09";
 var STORE_KEY = "bookFactory.state.v2";
 var LEGACY_KEY = "bookFactoryBooks";
 var THEME_KEY = "bookFactory.theme";
@@ -211,6 +219,7 @@ function seedFacts() {
 function seedState() {
   return {
     schema: SCHEMA_VERSION,
+    catalogueVersion: CATALOGUE_VERSION,
     books: seedBooks(),
     facts: seedFacts(),
     activity: [],
@@ -410,6 +419,11 @@ function normaliseBook(raw, index) {
         })
       : [],
     publishedAt: toInt(book.publishedAt, 0) || null,
+    // Carried explicitly: this function rebuilds a book from a fixed field
+    // list, so anything omitted here is silently dropped on every load.
+    listPriceUsd: Math.max(0, toNum(book.listPriceUsd, 0)) || null,
+    productionCostUsd: Math.max(0, toNum(book.productionCostUsd, 0)) || null,
+    generated: book.generated === true,
     issues: Array.isArray(book.issues) ? book.issues.filter(Boolean).map(function (issue) {
       return {
         id: String(issue.id || uid("is")),
@@ -419,6 +433,51 @@ function normaliseBook(raw, index) {
     }) : [],
     createdAt: toInt(book.createdAt, Date.now()),
     updatedAt: toInt(book.updatedAt, Date.now())
+  };
+}
+
+/**
+ * Royalty a seller actually pays out, and the price band that governs it.
+ *
+ * Rates are the author's own figures from the Publisher's Ledger. The KDP band
+ * is the consequential one: a title priced outside $2.99-$9.99 drops from 70%
+ * to 35%, so a $16.99 ebook on Amazon nets LESS per sale than a $9.99 one.
+ * These are planning numbers, not accounting - delivery fees and VAT vary.
+ */
+var ROYALTY = {
+  amazon: { rate: 0.70, lowRate: 0.35, bandLow: 2.99, bandHigh: 9.99, label: "Amazon / KDP" },
+  gumroad: { rate: 0.85, lowRate: 0.85, bandLow: 0, bandHigh: Infinity, label: "Gumroad" },
+  play: { rate: 0.70, lowRate: 0.70, bandLow: 0, bandHigh: Infinity, label: "Google Play Books" },
+  other: { rate: 0.80, lowRate: 0.80, bandLow: 0, bandHigh: Infinity, label: "Other store" }
+};
+
+/** What one sale nets at `price` on `storeId`, and whether the band bites. */
+function netPerSale(storeId, price) {
+  var r = ROYALTY[storeId] || ROYALTY.other;
+  var inBand = price >= r.bandLow && price <= r.bandHigh;
+  var rate = inBand ? r.rate : r.lowRate;
+  return { net: price * rate, rate: rate, inBand: inBand, penalised: !inBand && r.lowRate < r.rate };
+}
+
+/**
+ * The best price to list at on a store, and what it costs to get it wrong.
+ *
+ * On a banded store the answer is rarely "charge more": above the band the
+ * royalty halves, so the top of the band can out-earn a higher price until the
+ * price is roughly double. This returns the band-top comparison so the UI can
+ * show the crossover rather than assert a rule.
+ */
+function priceAdvice(storeId, price) {
+  var r = ROYALTY[storeId] || ROYALTY.other;
+  var current = netPerSale(storeId, price);
+  if (r.bandHigh === Infinity) return { current: current, better: null };
+
+  var bandTop = netPerSale(storeId, r.bandHigh);
+  if (current.net >= bandTop.net) return { current: current, better: null };
+
+  return {
+    current: current,
+    better: { price: r.bandHigh, net: bandTop.net, gain: bandTop.net - current.net }
   };
 }
 
@@ -454,36 +513,6 @@ function isLive(book) {
   return liveStores(book).length > 0;
 }
 
-/**
- * Was this stored library left exactly as the old demo seed shipped it?
- *
- * The pre-v3 seed carried the right book titles with invented production
- * stages, so anyone who never edited anything is looking at a library that
- * claims their published books are half-written. Those people should get the
- * real catalogue without having to know that a Reset button exists - but
- * anyone who HAS edited their library must keep what they did.
- *
- * The test is deliberately strict: every book must still carry a seed id, and
- * none may show any sign of having been touched.
- */
-function isUntouchedLegacyDemo(raw) {
-  var books = Array.isArray(raw.books) ? raw.books : [];
-  if (!books.length) return false;
-
-  return books.every(function (book) {
-    if (!book || typeof book !== "object") return false;
-    var isSeedId = String(book.id || "").indexOf("bk_seed_") === 0;
-    var untouched =
-      !book.released &&
-      !(book.liveOn && book.liveOn.length) &&
-      !(book.storefronts &&
-        Object.keys(book.storefronts).some(function (k) { return book.storefronts[k]; })) &&
-      !(book.issues && book.issues.length) &&
-      !Number(book.revenue);
-
-    return isSeedId && untouched;
-  });
-}
 
 function normaliseSchedule(raw) {
   var schedule = Object.assign(clone(DEFAULT_SCHEDULE), raw || {});
@@ -499,27 +528,81 @@ function normaliseSchedule(raw) {
   return schedule;
 }
 
+/**
+ * Fold the real catalogue into a stored library.
+ *
+ * Titles match loosely on name. For a match, anything the user recorded -
+ * revenue, storefront links, live flags - is kept, and only facts they have
+ * not set are taken from the catalogue. Books the user added are left alone,
+ * and catalogue titles they lack are added.
+ *
+ * This replaces an all-or-nothing migration: merging means a library with a
+ * single edit in it is no longer stranded on stale data.
+ */
+function mergeCatalogue(books) {
+  var canonical = seedBooks();
+  var out = books.slice();
+  var key = function (title) {
+    return String(title).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  };
+
+  var index = Object.create(null);
+  out.forEach(function (book, i) { index[key(book.title)] = i; });
+
+  canonical.forEach(function (fresh) {
+    var freshKey = key(fresh.title);
+    var found = index[freshKey];
+
+    // Tolerate a stored title that is a prefix of the catalogue's fuller one,
+    // e.g. "The Untold Ravana" vs "The Untold Ravana (Sita Secret Edition)".
+    if (found === undefined) {
+      Object.keys(index).forEach(function (storedKey) {
+        if (found !== undefined || storedKey.length < 6) return;
+        if (freshKey.indexOf(storedKey) === 0 || storedKey.indexOf(freshKey) === 0) found = index[storedKey];
+      });
+    }
+
+    if (found === undefined) {
+      out.push(fresh);
+      return;
+    }
+
+    var existing = out[found];
+    var userSetLive = (existing.liveOn && existing.liveOn.length) ||
+      Object.keys(existing.storefronts || {}).some(function (k) { return existing.storefronts[k]; });
+
+    out[found] = Object.assign({}, existing, {
+      title: fresh.title,
+      series: existing.series || fresh.series,
+      category: existing.category || fresh.category,
+      listPriceUsd: existing.listPriceUsd || fresh.listPriceUsd,
+      // The catalogue is the authority on where a book is on sale, unless the
+      // user has said otherwise themselves.
+      liveOn: userSetLive ? existing.liveOn : fresh.liveOn,
+      stage: userSetLive ? existing.stage : fresh.stage,
+      chapters: existing.chapters && existing.chapters.total ? existing.chapters : fresh.chapters,
+      words: existing.words && existing.words.target ? existing.words : fresh.words,
+      revenue: Number(existing.revenue) || 0,
+      updatedAt: Date.now(),
+    });
+  });
+
+  return out;
+}
+
 function normaliseState(raw) {
   if (!raw || typeof raw !== "object") return null;
 
   var base = seedState();
 
-  // Replace an untouched pre-v3 demo library with the real catalogue. Anything
-  // the user actually changed is preserved and merely normalised.
-  if (toInt(raw.schema, 1) < 3 && isUntouchedLegacyDemo(raw)) {
-    console.info("Book Factory: replacing the untouched demo library with the real catalogue.");
-    return Object.assign(base, {
-      activity: [{
-        id: uid("ac"),
-        at: Date.now(),
-        kind: "system",
-        message: "Library updated to your real catalogue — published titles now show as on sale.",
-      }],
-      settings: Object.assign(base.settings, raw.settings || {}),
-    });
-  }
-
   var books = Array.isArray(raw.books) ? raw.books.map(normaliseBook) : base.books;
+  var merged = false;
+
+  // Fold in the catalogue once per version, keeping everything the user set.
+  if (raw.catalogueVersion !== CATALOGUE_VERSION && books.length) {
+    books = mergeCatalogue(books).map(normaliseBook);
+    merged = true;
+  }
 
   var ids = Object.create(null);
   books.forEach(function (book) {
@@ -532,6 +615,8 @@ function normaliseState(raw) {
 
   return {
     schema: SCHEMA_VERSION,
+    catalogueVersion: CATALOGUE_VERSION,
+    catalogueMerged: merged,
     books: books,
     facts: (Array.isArray(raw.facts) ? raw.facts : base.facts)
       .filter(function (f) { return f && f.text; })
@@ -1084,7 +1169,24 @@ function render() {
   }
 }
 
+function renderCatalogueBanner() {
+  var banner = $("catalogueBanner");
+  if (!banner) return;
+
+  var show = state.catalogueMerged && !ui.bannerDismissed;
+  banner.hidden = !show;
+  if (!show) return;
+
+  var live = state.books.filter(isLive).length;
+  $("catalogueBannerText").textContent =
+    "Your stored library predated the catalogue update, so published titles were " +
+    "showing as work in progress. It has been merged: " + live + " of " +
+    state.books.length + " titles are now marked on sale, and anything you had " +
+    "edited was kept.";
+}
+
 function renderChrome() {
+  renderCatalogueBanner();
   var s = summary();
 
   $("navCountLibrary").textContent = s.total;
@@ -1278,6 +1380,43 @@ function spineColor(category) {
   return palette[category] || "var(--muted)";
 }
 
+/**
+ * A compact ten-stage strip per book, so progress is visible as position in
+ * the pipeline rather than only as a percentage.
+ */
+function stageStrip(book) {
+  var current = stageIndex(book.stage);
+
+  return STAGES.map(function (stage, i) {
+    var cls = i < current ? "stage done" : i === current ? "stage current" : "stage";
+    return '<div class="' + cls + '" title="' + escapeHTML(stage) + '"><b>' +
+      String(i + 1).padStart(2, "0") + "</b>" + escapeHTML(stage) + "</div>";
+  }).join("");
+}
+
+function renderStageProgress() {
+  var host = $("stageProgress");
+  if (!host) return;
+
+  var inProduction = state.books.filter(function (b) { return !isLive(b); });
+
+  host.innerHTML = inProduction.length
+    ? inProduction
+        .sort(function (a, b) { return progressOf(b) - progressOf(a); })
+        .map(function (book) {
+          var pct = progressOf(book);
+          return '<div style="margin-bottom:18px">' +
+            '<div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:6px">' +
+              "<strong>" + escapeHTML(book.title) + "</strong>" +
+              '<span class="small muted">' + escapeHTML(book.stage) + " · " + pct + "% · " +
+                book.chapters.done + "/" + book.chapters.total + " chapters</span>" +
+            "</div>" +
+            '<div class="pipeline">' + stageStrip(book) + "</div>" +
+            "</div>";
+        }).join("")
+    : '<p class="muted small">Nothing in production. Generate a book from a blueprint and its stages will appear here.</p>';
+}
+
 /** Titles genuinely still being worked on - everything not yet on sale. */
 function rowsInProduction() {
   return state.books.filter(function (b) { return !isLive(b); }).length;
@@ -1332,6 +1471,8 @@ function renderProduction() {
             ? "Every title in the catalogue is on sale. Nothing is in production."
             : "The library is empty.",
       );
+
+  renderStageProgress();
 }
 
 function renderScheduler() {
@@ -1633,6 +1774,9 @@ function renderAnalytics() {
           : "Nothing is marked on sale yet. Mark a title in the library and gaps will appear here.",
       );
 
+  renderListingMatrix(books);
+  renderPricing(books);
+
   $("revenueNote").textContent = revenue
     ? "Recorded per book in the editor. Gumroad figures can be pulled with `node src/cli.js gumroad-list`; Amazon and Google publish no sales API, so those stay manual."
     : "No revenue recorded yet. Enter it per book in the editor, or pull Gumroad figures with `node src/cli.js gumroad-list`. Amazon and Google publish no sales API, so those stay manual.";
@@ -1653,6 +1797,102 @@ function renderAnalytics() {
             "</tr>";
         }).join("")
     : emptyRow(4, "No titles yet.");
+}
+
+/** Every title against every storefront, as a plain yes/no grid. */
+function renderListingMatrix(books) {
+  var host = $("listingMatrix");
+  if (!host) return;
+
+  var head = "<thead><tr><th>Title</th>" +
+    STORES.map(function (store) { return "<th>" + escapeHTML(store.label) + "</th>"; }).join("") +
+    "</tr></thead>";
+
+  var rows = books
+    .slice()
+    .sort(function (a, b) { return liveStores(b).length - liveStores(a).length || a.title.localeCompare(b.title); })
+    .map(function (book) {
+      var on = liveStores(book).map(function (s) { return s.id; });
+      return "<tr><td>" + escapeHTML(book.title) + "</td>" +
+        STORES.map(function (store) {
+          var url = (book.storefronts || {})[store.id];
+          if (on.indexOf(store.id) >= 0) {
+            return "<td>" + (url
+              ? '<a href="' + escapeHTML(url) + '" target="_blank" rel="noopener">' + pill("LISTED", "ok") + "</a>"
+              : pill("LISTED", "ok")) + "</td>";
+          }
+          return '<td><span class="small muted">—</span></td>';
+        }).join("") +
+        "</tr>";
+    }).join("");
+
+  host.innerHTML = head + "<tbody>" +
+    (rows || emptyRow(STORES.length + 1, "No titles yet.")) + "</tbody>";
+}
+
+/**
+ * Pricing and break-even, per title per store it is on.
+ *
+ * Break-even is measured against what a book costs to PRODUCE with this
+ * engine - roughly a dollar of model time plus a cover. For books written by
+ * hand the figure is not meaningful, so it is only shown where a production
+ * cost is actually recorded, and the note says so.
+ */
+function renderPricing(books) {
+  var host = $("pricingTable");
+  if (!host) return;
+
+  var ENGINE_COST = 1.5; // ~$1 of batched model time, plus a little slack.
+  var rows = [];
+  var penalised = 0;
+
+  books.forEach(function (book) {
+    var price = Number(book.listPriceUsd) || 0;
+    if (!price) return;
+
+    var stores = liveStores(book);
+    if (!stores.length) return;
+
+    stores.forEach(function (store) {
+      var advice = priceAdvice(store.id, price);
+      var cost = Number(book.productionCostUsd) || (book.generated ? ENGINE_COST : 0);
+      var breakEven = advice.current.net > 0 && cost
+        ? Math.ceil(cost / advice.current.net)
+        : null;
+
+      if (advice.current.penalised) penalised += 1;
+
+      rows.push(
+        "<tr>" +
+          "<td>" + escapeHTML(book.title) + "</td>" +
+          '<td class="small muted">' + escapeHTML(store.label) + "</td>" +
+          '<td class="nowrap">' + formatMoney(price) + "</td>" +
+          "<td>" + pill(
+            Math.round(advice.current.rate * 100) + "%",
+            advice.current.penalised ? "warn" : "ok",
+          ) + "</td>" +
+          '<td class="nowrap">' + formatMoney(advice.current.net) + "</td>" +
+          '<td class="nowrap">' + (breakEven
+            ? breakEven + " sale" + (breakEven === 1 ? "" : "s")
+            : '<span class="muted small">cost not recorded</span>') + "</td>" +
+          '<td class="small">' + (advice.better
+            ? formatMoney(advice.better.price) + " would net " + formatMoney(advice.better.net) +
+              ' <span class="muted">(+' + formatMoney(advice.better.gain) + "/sale)</span>"
+            : '<span class="muted">already optimal</span>') + "</td>" +
+        "</tr>",
+      );
+    });
+  });
+
+  host.innerHTML = rows.length ? rows.join("") : emptyRow(7, "No priced titles on sale yet.");
+
+  $("pricingNote").textContent = penalised
+    ? penalised + " listing(s) are priced outside Amazon's $2.99–$9.99 band, where the royalty " +
+      "drops from 70% to 35% — so a higher price earns less per sale until it is roughly doubled. " +
+      "Break-even counts sales needed to cover production; it only appears for books this engine made."
+    : "Royalty rates are the planning figures from your ledger: Amazon 70% inside the $2.99–$9.99 " +
+      "band and 35% outside it, Gumroad 85%, Google Play 70%. Break-even only appears for books " +
+      "this engine produced, since it is measured against their production cost.";
 }
 
 function renderSettings() {
@@ -2199,6 +2439,10 @@ function useBlueprint(id) {
     queued: true,
     released: false,
     issues: [],
+    // Marks this as engine-produced, so break-even can be computed against a
+    // real cost rather than guessed for a book written by hand.
+    generated: true,
+    listPriceUsd: 9.99,
     createdAt: Date.now(),
     updatedAt: Date.now()
   };
@@ -2475,6 +2719,12 @@ var ACTIONS = {
   "import": function () { $("importFile").click(); },
   "reset": resetData,
   "close-modal": closeModal,
+  "dismiss-catalogue-banner": function () {
+    ui.bannerDismissed = true;
+    state.catalogueMerged = false;
+    save();
+    renderCatalogueBanner();
+  },
   "clear-activity": function () {
     state.activity = [];
     save();
