@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Book Factory — Approvals</title>
+<link rel="stylesheet" href="/assets/styles.css">
+<style>
+  .app { display: block; }
+  .main { max-width: 1180px; margin: 0 auto; }
+  .split { display: grid; gap: 18px; grid-template-columns: 340px 1fr; align-items: start; }
+  @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+  .queue { display: flex; flex-direction: column; gap: 10px; max-height: 78vh; overflow: auto; }
+  .queue-item { text-align: left; width: 100%; border: 1px solid var(--border); background: var(--panel-2);
+    border-radius: var(--radius-sm); padding: 12px; display: flex; flex-direction: column; gap: 5px; }
+  .queue-item:hover { background: var(--panel-3); }
+  .queue-item[aria-current="true"] { border-color: var(--blue); background: var(--panel-3); }
+  .queue-item .t { font-weight: 700; font-size: 13px; line-height: 1.3; }
+  .cover-preview { width: 100%; max-width: 190px; border-radius: 6px; border: 1px solid var(--border); display: block; }
+  .reader { max-height: 62vh; overflow: auto; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 20px 24px; line-height: 1.65; font-family: Georgia, serif; }
+  .reader h1 { font-size: 18px; margin-top: 26px; border-top: 1px solid var(--border-soft); padding-top: 18px; }
+  .reader h1:first-child { margin-top: 0; border-top: 0; padding-top: 0; }
+  .reader p { margin: 0 0 12px; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 12px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  .runlog { font-family: ui-monospace, monospace; font-size: 11px; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; max-height: 190px; overflow: auto; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-size: 11px; background: var(--panel-3); border: 1px solid var(--border); padding: 4px 9px; border-radius: 999px; }
+</style>
+</head>
+<body>
+<div class="app"><main class="main">
+
+<header class="topbar">
+  <div class="top-title">
+    <h1>Approvals</h1>
+    <p id="sub">Nothing is published until you approve it.</p>
+  </div>
+  <div class="top-actions">
+    <button class="btn" id="refresh">Refresh</button>
+    <button class="btn primary" id="generate">Generate a book</button>
+  </div>
+</header>
+
+<section class="section card" id="runCard" hidden>
+  <h2>Generation in progress</h2>
+  <div class="runlog" id="runLog"></div>
+</section>
+
+<section class="section card">
+  <h2>Schedule</h2>
+  <div class="toolbar">
+    <label class="switch"><input type="checkbox" id="schedEnabled"> <span>Automatic production</span></label>
+    <select id="schedCadence" class="input"></select>
+    <input id="schedTime" class="input" type="time" style="max-width:130px">
+    <button class="btn" id="saveSchedule">Save</button>
+    <span class="small muted" id="nextRun"></span>
+  </div>
+  <p class="small muted" id="genreHistory"></p>
+</section>
+
+<div class="split section">
+  <div class="card">
+    <h2>Queue</h2>
+    <div class="queue" id="queue"></div>
+  </div>
+  <div class="card" id="detail"><p class="muted small">Select a book to review.</p></div>
+</div>
+
+</main></div>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null;
+let selected = null;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c]));
+
+function toast(msg, kind) {
+  const el = document.createElement("div");
+  el.className = "toast " + (kind || "");
+  el.textContent = msg;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+
+async function api(path, options) {
+  const res = await fetch(path, {
+    ...options,
+    headers: options?.body ? { "Content-Type": "application/json" } : undefined,
+  });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
+async function refresh() {
+  state = await api("/api/state");
+  renderSchedule();
+  renderQueue();
+  renderRun();
+  if (selected) {
+    const still = state.books.find((b) => b.id === selected);
+    if (still) renderDetail(still);
+  }
+}
+
+function renderSchedule() {
+  const cadences = state.cadences;
+  const select = $("schedCadence");
+  if (!select.options.length) {
+    select.innerHTML = Object.entries(cadences)
+      .map(([id, c]) => `<option value="${id}">${esc(c.label)}</option>`).join("");
+  }
+  const s = state.schedule || { enabled: false, cadence: "weekly", time: "09:00" };
+  $("schedEnabled").checked = Boolean(s.enabled);
+  select.value = s.cadence;
+  $("schedTime").value = s.time;
+  $("nextRun").textContent = state.nextRunAt
+    ? `Next run ${new Date(state.nextRunAt).toLocaleString()}`
+    : "No run scheduled";
+
+  const history = state.genreHistory || [];
+  $("genreHistory").textContent = history.length
+    ? "Recent genres (never repeats): " + history.map((h) => h.genre).join(" → ")
+    : "No genre history yet.";
+}
+
+function statusKind(status) {
+  return { published: "ok", approved: "blue", rejected: "bad", awaiting_approval: "warn" }[status] || "";
+}
+
+function renderQueue() {
+  const books = state.books;
+  $("sub").textContent =
+    `${books.filter((b) => b.status === "awaiting_approval").length} awaiting approval · ${books.length} total`;
+
+  $("queue").innerHTML = books.length
+    ? books.map((b) => `
+      <button class="queue-item" data-id="${esc(b.id)}" aria-current="${b.id === selected}">
+        <span class="t">${esc(b.title)}</span>
+        <span class="small muted">${esc(b.genreName)} · ${b.wordCount.toLocaleString()} words</span>
+        <span><span class="pill ${statusKind(b.status)}">${esc(b.status.replace(/_/g, " "))}</span></span>
+      </button>`).join("")
+    : '<p class="muted small">No books yet. Generate one.</p>';
+}
+
+async function renderDetail(book) {
+  selected = book.id;
+  renderQueue();
+
+  const l = book.listing;
+  $("detail").innerHTML = `
+    <div style="display:flex;gap:18px;flex-wrap:wrap">
+      <img class="cover-preview" src="/library/${esc(book.id)}/cover.svg" alt="Cover of ${esc(book.title)}">
+      <div style="flex:1;min-width:260px">
+        <h2 style="margin-bottom:2px">${esc(book.title)}</h2>
+        <p class="muted small">${esc(book.subtitle)}</p>
+        <dl class="kv">
+          <dt>Status</dt><dd><span class="pill ${statusKind(book.status)}">${esc(book.status.replace(/_/g, " "))}</span></dd>
+          <dt>Genre</dt><dd>${esc(book.genreName)} — ${esc(book.angle)}</dd>
+          <dt>Length</dt><dd>${book.wordCount.toLocaleString()} words · ${book.chapterCount} chapters · ${book.figureCount} figures</dd>
+          <dt>Price</dt><dd>$${l.priceUsd.toFixed(2)} — ${esc(l.priceRationale)}</dd>
+          <dt>Model</dt><dd>${esc(book.model)}</dd>
+          <dt>Cost to make</dt><dd>$${book.cost.usd.toFixed(2)}</dd>
+          ${book.published.gumroad?.url ? `<dt>Gumroad</dt><dd><a href="${esc(book.published.gumroad.url)}" target="_blank" rel="noopener">${esc(book.published.gumroad.url)}</a></dd>` : ""}
+        </dl>
+      </div>
+    </div>
+
+    <h3 style="margin-top:18px">Listing</h3>
+    <p class="small" style="white-space:pre-wrap">${esc(l.description)}</p>
+    <div class="chips" style="margin:10px 0">${l.keywords.map((k) => `<span class="chip">${esc(k)}</span>`).join("")}</div>
+
+    <h3 style="margin-top:18px">Manuscript</h3>
+    <div class="reader" id="reader"><p class="muted small">Loading…</p></div>
+
+    <div class="actions" style="margin-top:16px">
+      ${book.status === "awaiting_approval" ? `
+        <button class="btn success" data-act="approve">Approve</button>
+        <button class="btn danger" data-act="reject">Reject</button>` : ""}
+      ${book.status === "approved" ? `
+        <button class="btn" data-act="publish-dry">Preview Gumroad payload</button>
+        <button class="btn primary" data-act="publish">Publish to Gumroad</button>` : ""}
+      <a class="btn" href="/api/books/${esc(book.id)}/kdp" target="_blank" rel="noopener">KDP upload sheet</a>
+      <a class="btn" href="/library/${esc(book.id)}/${esc(book.epubFile)}">Download EPUB</a>
+    </div>`;
+
+  const md = await (await fetch(`/api/books/${book.id}/manuscript`)).text();
+  $("reader").innerHTML = md
+    .split(/\n{2,}/)
+    .map((block) => block.startsWith("# ")
+      ? `<h1>${esc(block.slice(2))}</h1>`
+      : block.trim() === "---" ? "" : `<p>${esc(block)}</p>`)
+    .join("");
+}
+
+function renderRun() {
+  const run = state.activeRun;
+  $("runCard").hidden = !run;
+  if (!run) return;
+  $("runLog").innerHTML = run.lines.map((l) => esc(l.line)).join("<br>")
+    + (run.error ? `<br><span style="color:var(--red)">${esc(run.error)}</span>` : "")
+    + (run.done && !run.error ? "<br>— finished —" : "");
+  $("runLog").scrollTop = $("runLog").scrollHeight;
+}
+
+document.addEventListener("click", async (event) => {
+  const item = event.target.closest(".queue-item");
+  if (item) {
+    const book = state.books.find((b) => b.id === item.dataset.id);
+    if (book) renderDetail(book);
+    return;
+  }
+
+  const action = event.target.closest("[data-act]")?.dataset.act;
+  if (!action || !selected) return;
+
+  try {
+    if (action === "approve") {
+      await api(`/api/books/${selected}/approve`, { method: "POST" });
+      toast("Approved. It can now be published.", "ok");
+    } else if (action === "reject") {
+      const reason = prompt("Why are you rejecting it?") || "";
+      await api(`/api/books/${selected}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
+      toast("Rejected.", "warn");
+    } else if (action === "publish-dry") {
+      const out = await api(`/api/books/${selected}/publish`, { method: "POST", body: JSON.stringify({ dryRun: true }) });
+      alert(JSON.stringify(out.result, null, 2));
+      return;
+    } else if (action === "publish") {
+      if (!confirm("Publish to Gumroad now? This creates a real, live product.")) return;
+      await api(`/api/books/${selected}/publish`, { method: "POST", body: JSON.stringify({}) });
+      toast("Published to Gumroad.", "ok");
+    }
+    await refresh();
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+});
+
+$("refresh").addEventListener("click", () => refresh().catch((e) => toast(e.message, "bad")));
+
+$("generate").addEventListener("click", async () => {
+  const dryRun = !confirm("Generate for real? This spends money on the API.\n\nOK = real run, Cancel = dry run (free).");
+  try {
+    await api("/api/generate", { method: "POST", body: JSON.stringify({ dryRun }) });
+    toast(dryRun ? "Dry run started." : "Generation started.", "ok");
+    const timer = setInterval(async () => {
+      await refresh();
+      if (!state.activeRun || state.activeRun.done) clearInterval(timer);
+    }, 1500);
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+});
+
+$("saveSchedule").addEventListener("click", async () => {
+  try {
+    await api("/api/schedule", {
+      method: "POST",
+      body: JSON.stringify({
+        enabled: $("schedEnabled").checked,
+        cadence: $("schedCadence").value,
+        time: $("schedTime").value,
+      }),
+    });
+    toast("Schedule saved.", "ok");
+    await refresh();
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+});
+
+refresh().catch((err) => toast(err.message, "bad"));
+</script>
+</body>
+</html>
