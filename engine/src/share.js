@@ -31,7 +31,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
+import { randomBytes, randomInt, timingSafeEqual, X509Certificate } from "node:crypto";
 import * as store from "./store.js";
 import { markdownToXhtml } from "./epub.js";
 
@@ -83,8 +83,17 @@ export function makeCertificate(addresses = []) {
   }
 }
 
-/** token -> { bookId, expiresAt } */
+/**
+ * token -> { bookId, expiresAt, passcode, attemptsLeft, sessions:Set<string> }
+ *
+ * The token in the URL says WHICH book; the passcode says you are meant to see
+ * it. Splitting them is the point: a forwarded link, a screenshot, a browser
+ * history entry or a line in a router log is no longer enough on its own.
+ */
 const links = new Map();
+
+/** How many wrong passcodes before a link is destroyed rather than merely locked. */
+const MAX_ATTEMPTS = 5;
 
 /**
  * Headers every response carries.
@@ -110,8 +119,76 @@ const esc = (s) =>
 
 export function mintLink(bookId, ttlMs = DEFAULT_TTL_MS) {
   const token = randomBytes(16).toString("hex");
-  links.set(token, { bookId, expiresAt: Date.now() + ttlMs });
-  return token;
+
+  // Six digits, read aloud or typed on a phone keypad without fuss. Short is
+  // only safe because MAX_ATTEMPTS destroys the link long before a guesser
+  // gets anywhere near a million tries.
+  const passcode = String(randomInt(0, 1_000_000)).padStart(6, "0");
+
+  links.set(token, {
+    bookId,
+    expiresAt: Date.now() + ttlMs,
+    passcode,
+    attemptsLeft: MAX_ATTEMPTS,
+    sessions: new Set(),
+  });
+  return { token, passcode };
+}
+
+/** Constant-time string compare that does not leak length through timing. */
+function sameSecret(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) {
+    // Still do the work, so a wrong length is not measurably faster.
+    timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * Checks a passcode and, on success, issues a session id for the cookie.
+ *
+ * On failure it burns an attempt. When the last one goes the link is deleted
+ * outright rather than locked: a locked link is a thing an attacker can keep
+ * poking at, and you can always mint a new one.
+ *
+ * @returns {{ok:true, session:string}|{ok:false, attemptsLeft:number, dead:boolean}}
+ */
+export function unlock(token, passcode, onDestroyed = () => {}) {
+  const entry = resolve(token);
+  if (!entry) return { ok: false, attemptsLeft: 0, dead: true };
+
+  if (sameSecret(entry.passcode, passcode)) {
+    const session = randomBytes(16).toString("hex");
+    entry.sessions.add(session);
+    return { ok: true, session };
+  }
+
+  entry.attemptsLeft -= 1;
+  if (entry.attemptsLeft <= 0) {
+    for (const [known, value] of links) if (value === entry) links.delete(known);
+    onDestroyed();
+    return { ok: false, attemptsLeft: 0, dead: true };
+  }
+  return { ok: false, attemptsLeft: entry.attemptsLeft, dead: false };
+}
+
+/** Is this request carrying a session cookie this link issued? */
+function unlocked(entry, req) {
+  const header = req.headers.cookie;
+  if (!header) return false;
+
+  for (const part of header.split(";")) {
+    const [name, ...rest] = part.trim().split("=");
+    if (name !== "bf_share") continue;
+    const value = rest.join("=");
+    for (const session of entry.sessions) {
+      if (sameSecret(session, value)) return true;
+    }
+  }
+  return false;
 }
 
 export function revokeLink(token) {
@@ -191,6 +268,19 @@ function page(title, body, lang = "en") {
   table { border-collapse: collapse; font-size: .85em; width: 100%; }
   th, td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
   hr { border: 0; border-top: 1px solid var(--line); margin: 2.5em 0; }
+  form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 4px 0 18px; }
+  .code {
+    font: 600 26px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: .3em; width: 6.5em; padding: 12px 14px; min-height: 48px;
+    border: 1px solid var(--line); border-radius: 10px;
+    background: var(--paper); color: var(--ink);
+  }
+  button.btn {
+    padding: 12px 18px; border-radius: 10px; border: 1px solid #2f6fed;
+    background: #2f6fed; color: #fff; font: 15px system-ui, sans-serif; min-height: 48px;
+  }
+  .warn { color: #b3261e; font-family: system-ui, sans-serif; font-size: .9em; }
+  @media (prefers-color-scheme: dark) { .warn { color: #f2b8b5; } }
 </style>
 </head>
 <body>
@@ -272,6 +362,29 @@ ${body}`, book.language));
   }],
 ];
 
+/**
+ * The gate. Deliberately says nothing about the book - not its title, not its
+ * genre - because whoever is looking at this has not proved they may see it.
+ */
+function askForPasscode(res, token, { wrong = false, attemptsLeft = 0 } = {}) {
+  res.writeHead(wrong ? 401 : 200, secure({ "Content-Type": "text/html; charset=utf-8" }));
+  res.end(page("Passcode", `
+<h1>Enter the passcode</h1>
+<p class="sub">
+  The six digits shown in the terminal where you started sharing.
+</p>
+<form method="POST" action="/s/${token}/unlock">
+  <input class="code" name="passcode" inputmode="numeric" pattern="[0-9]*" maxlength="6"
+         autocomplete="off" autofocus aria-label="Six digit passcode">
+  <button class="btn primary" type="submit">Open</button>
+</form>
+${wrong ? `<p class="warn">Wrong passcode. ${attemptsLeft} attempt${attemptsLeft === 1 ? "" : "s"} left before this link is destroyed.</p>` : ""}
+<p class="note">
+  The link alone is not enough on purpose, so forwarding it by accident does
+  not hand over the book.
+</p>`));
+}
+
 function notFound(res) {
   res.writeHead(404, secure({ "Content-Type": "text/html; charset=utf-8" }));
   res.end(page("Not found", `<h1>Not found</h1><p class="sub">This link has expired, been revoked, or never existed.</p>`));
@@ -281,15 +394,49 @@ function notFound(res) {
  * @param {object} [tls]  { key, cert } to serve HTTPS. Omit only for a
  *                        deliberate plaintext fallback - see the CLI.
  */
-export function createShareServer(tls = null) {
+const UNLOCK = /^\/s\/([0-9a-f]{32})\/unlock\/?$/;
+
+export function createShareServer(tls = null, { onDestroyed = () => {} } = {}) {
   const handler = async (req, res) => {
+    const pathname = new URL(req.url, "http://localhost").pathname;
+    const unlockMatch = pathname.match(UNLOCK);
+
+    // POST exists for exactly one path: submitting the passcode. It writes
+    // nothing to the library - only to the in-memory session set for this
+    // link - so the "no write surface" property is unchanged.
+    if (req.method === "POST" && unlockMatch) {
+      const token = unlockMatch[1];
+      const submitted = await readPasscode(req);
+      const result = unlock(token, submitted, onDestroyed);
+
+      if (!result.ok) {
+        if (result.dead) return notFound(res);
+        // A wrong guess should not be cheap to make a thousand times.
+        await new Promise((r) => setTimeout(r, 400));
+        return askForPasscode(res, token, { wrong: true, attemptsLeft: result.attemptsLeft });
+      }
+
+      res.writeHead(303, secure({
+        Location: `/s/${token}`,
+        // Secure only under TLS: a Secure cookie is silently dropped over
+        // plain HTTP, which would lock out anyone on the --insecure path.
+        "Set-Cookie": `bf_share=${result.session}; Path=/s/${token}; HttpOnly; SameSite=Strict; Max-Age=86400${tls ? "; Secure" : ""}`,
+      }));
+      return res.end();
+    }
+
     if (req.method !== "GET" && req.method !== "HEAD") {
-      // There is no write surface here at all; say so plainly.
+      // Everything else is read-only; say so plainly.
       res.writeHead(405, secure({ Allow: "GET, HEAD", "Content-Type": "text/plain" }));
       return res.end("This server is read-only.\n");
     }
 
-    const pathname = new URL(req.url, "http://localhost").pathname;
+    // A GET of the unlock path is someone reloading the form.
+    if (unlockMatch) {
+      return resolve(unlockMatch[1])
+        ? askForPasscode(res, unlockMatch[1])
+        : notFound(res);
+    }
 
     for (const [pattern, handler] of routes) {
       const match = pathname.match(pattern);
@@ -297,6 +444,10 @@ export function createShareServer(tls = null) {
 
       const entry = resolve(match[1]);
       if (!entry) return notFound(res);
+
+      // The gate. Nothing about the book - not even its title - is served
+      // before the passcode, so the page cannot leak what it is protecting.
+      if (!unlocked(entry, req)) return askForPasscode(res, match[1]);
 
       try {
         return await handler(res, match.slice(1), entry);
@@ -312,4 +463,20 @@ export function createShareServer(tls = null) {
   return tls ? https.createServer(tls, handler) : http.createServer(handler);
 }
 
-export const __test = { links, resolve };
+/** Reads the passcode field, with a hard cap so a body cannot exhaust memory. */
+function readPasscode(req) {
+  return new Promise((resolve) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1024) { body = body.slice(0, 1024); req.destroy(); }
+    });
+    req.on("end", () => {
+      const params = new URLSearchParams(body);
+      resolve((params.get("passcode") || "").trim());
+    });
+    req.on("error", () => resolve(""));
+  });
+}
+
+export const __test = { links, resolve, unlocked, MAX_ATTEMPTS };

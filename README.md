@@ -116,6 +116,12 @@ phone on the same wifi: you can read the manuscript and save the EPUB, and
 that is all. There is no approve, reject, publish or generate route in that
 server - not disabled, absent.
 
+Two things are needed to read the book: the link, and a six-digit passcode the
+command prints next to it. Until the passcode is entered the page shows nothing
+about the book - not even its title - so a link that gets forwarded,
+screenshotted or written to a log is not on its own enough. Five wrong attempts
+destroy the link rather than locking it; mint a new one with `share` again.
+
 Each link carries a 128-bit token scoped to one book, expires (2 hours by
 default, `--hours` to change it), and dies when you stop the command.
 

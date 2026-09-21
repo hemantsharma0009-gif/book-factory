@@ -232,8 +232,10 @@ async function main() {
       }
 
       const scheme = tls ? "https" : "http";
-      const token = mintLink(book.id, hours * 3600_000);
-      const server = createShareServer(tls);
+      const { token, passcode } = mintLink(book.id, hours * 3600_000);
+      const server = createShareServer(tls, {
+        onDestroyed: () => log(`\nLink destroyed after ${5} wrong passcodes. Run share again for a new one.`),
+      });
 
       // 0.0.0.0 on purpose: the whole point is that a phone can reach it. The
       // review console, which can spend money and publish, stays on localhost.
@@ -245,6 +247,12 @@ async function main() {
       } else {
         log(`  ${scheme}://localhost:${port}/s/${token}   (no LAN address found)`);
       }
+
+      log(`\n  Passcode: ${passcode.slice(0, 3)} ${passcode.slice(3)}\n`);
+      log(`The page asks for those six digits before it shows anything about the
+book - not even the title. So a link that gets forwarded, screenshotted or
+logged somewhere is not on its own enough to read the book. Five wrong
+attempts destroy the link.`);
 
       if (tls) {
         log(`

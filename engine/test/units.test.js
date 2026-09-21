@@ -561,8 +561,8 @@ test("an unknown language is a warning, not a silent English book", () => {
 });
 
 test("a share link resolves only for its own token", () => {
-  const a = mintLink("bk_a");
-  const b = mintLink("bk_b");
+  const { token: a } = mintLink("bk_a");
+  const { token: b } = mintLink("bk_b");
   assert.equal(__share.resolve(a).bookId, "bk_a");
   assert.equal(__share.resolve(b).bookId, "bk_b");
   assert.equal(__share.resolve("0".repeat(32)), null);
@@ -573,12 +573,12 @@ test("a share link resolves only for its own token", () => {
 });
 
 test("a share link stops working when it expires", () => {
-  const token = mintLink("bk_x", -1);   // already expired
+  const { token } = mintLink("bk_x", -1);   // already expired
   assert.equal(__share.resolve(token), null);
 });
 
 test("a revoked share link stops working immediately", () => {
-  const token = mintLink("bk_y");
+  const { token } = mintLink("bk_y");
   assert.ok(__share.resolve(token));
   assert.equal(revokeLink(token), true);
   assert.equal(__share.resolve(token), null);
@@ -591,7 +591,7 @@ test("the share server refuses every write, whatever the path", async () => {
   const server = createShareServer();
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const token = mintLink("bk_probe");
+  const { token } = mintLink("bk_probe");
 
   try {
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
@@ -599,6 +599,11 @@ test("the share server refuses every write, whatever the path", async () => {
                           "/api/books/bk_probe/publish", "/api/generate"]) {
         const res = await fetch(`${base}${path}`, { method });
         assert.equal(res.status, 405, `${method} ${path} returned ${res.status}, not 405`);
+      }
+      // The single exception is submitting a passcode, and only by POST.
+      if (method !== "POST") {
+        const res = await fetch(`${base}/s/${token}/unlock`, { method });
+        assert.equal(res.status, 405, `${method} on unlock returned ${res.status}`);
       }
     }
 
@@ -641,7 +646,7 @@ test("every share response carries the headers that keep the link private", asyn
   const server = createShareServer({ key, cert });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const port = server.address().port;
-  const token = mintLink("bk_headers");
+  const { token } = mintLink("bk_headers");
 
   // A throwaway certificate is untrusted by definition, so this goes through
   // node:https rather than fetch: the point is the headers, not the chain.
@@ -682,4 +687,120 @@ test("the share server still works without TLS, for a trusted network", async ()
   } finally {
     server.close();
   }
+});
+
+test("a share link shows nothing about the book without the passcode", async () => {
+  const server = createShareServer(null);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const { token } = mintLink("bk_mubd0w9f");
+
+  try {
+    for (const path of ["", "/read", "/epub"]) {
+      const res = await fetch(`${base}/s/${token}${path}`);
+      const body = await res.text();
+      assert.match(body, /Enter the passcode/, `${path || "/"} skipped the gate`);
+      // Not even the title leaks: whoever is looking has not proved they may see it.
+      assert.doesNotMatch(body, /One Pan/, `${path || "/"} leaked the book's title`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test("the right passcode opens the book, and the cookie is scoped and locked down", async () => {
+  const server = createShareServer(null);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const { token, passcode } = mintLink("bk_mubd0w9f");
+
+  try {
+    const res = await fetch(`${base}/s/${token}/unlock`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ passcode }),
+      redirect: "manual",
+    });
+    assert.equal(res.status, 303);
+
+    const cookie = res.headers.get("set-cookie");
+    assert.match(cookie, /HttpOnly/, "the cookie is readable by script");
+    assert.match(cookie, /SameSite=Strict/, "the cookie rides cross-site requests");
+    assert.match(cookie, new RegExp(`Path=/s/${token}`), "the cookie is not scoped to this link");
+
+    const value = cookie.match(/bf_share=([0-9a-f]+)/)[1];
+    const book = await fetch(`${base}/s/${token}`, { headers: { cookie: `bf_share=${value}` } });
+    assert.match(await book.text(), /One Pan/, "the passcode did not open the book");
+  } finally {
+    server.close();
+  }
+});
+
+test("one link's session does not open another link", async () => {
+  const server = createShareServer(null);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const mine = mintLink("bk_mubd0w9f");
+  const theirs = mintLink("bk_mubd0w9f");
+
+  try {
+    const res = await fetch(`${base}/s/${mine.token}/unlock`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ passcode: mine.passcode }),
+      redirect: "manual",
+    });
+    const value = res.headers.get("set-cookie").match(/bf_share=([0-9a-f]+)/)[1];
+
+    const other = await fetch(`${base}/s/${theirs.token}`, { headers: { cookie: `bf_share=${value}` } });
+    assert.match(await other.text(), /Enter the passcode/, "a session opened someone else's link");
+  } finally {
+    server.close();
+  }
+});
+
+test("five wrong passcodes destroy the link rather than locking it", async () => {
+  // A locked link is something an attacker can keep poking at. Destroying it
+  // costs you one command and costs them everything.
+  const server = createShareServer(null);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const { token, passcode } = mintLink("bk_mubd0w9f");
+  const wrong = passcode === "000000" ? "111111" : "000000";
+
+  const guess = (code) =>
+    fetch(`${base}/s/${token}/unlock`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ passcode: code }),
+      redirect: "manual",
+    });
+
+  try {
+    for (let i = 1; i <= __share.MAX_ATTEMPTS - 1; i++) {
+      const res = await guess(wrong);
+      assert.equal(res.status, 401, `attempt ${i} should be refused`);
+      assert.match(await res.text(), /attempt.? left/, "the page does not say how many tries remain");
+    }
+
+    const last = await guess(wrong);
+    assert.equal(last.status, 404, "the final wrong guess should destroy the link");
+
+    // Even the real passcode is no good now: the link is gone.
+    assert.equal((await guess(passcode)).status, 404);
+    assert.equal(__share.resolve(token), null);
+  } finally {
+    server.close();
+  }
+});
+
+test("passcodes are six digits and not predictable", () => {
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) {
+    const { passcode } = mintLink("bk_rand");
+    assert.match(passcode, /^\d{6}$/, `bad passcode shape: ${passcode}`);
+    seen.add(passcode);
+  }
+  // 200 draws from a million: a generator stuck in a rut shows up here.
+  assert.ok(seen.size > 190, `only ${seen.size} distinct passcodes in 200 draws`);
 });
