@@ -380,40 +380,40 @@
 
   <div class="section grid grid-2">
     <div class="card">
-      <h2>Production activity</h2>
-      <p class="muted small">Pipeline events recorded per day over the last week.</p>
-      <div class="chart" id="activityChart"></div>
+      <h2>Storefront coverage</h2>
+      <p class="muted small">How many titles are on sale at each store. Hover a bar to see which.</p>
+      <div class="bars" id="coverageBars"></div>
     </div>
 
     <div class="card">
       <h2>Portfolio by category</h2>
+      <p class="muted small">Titles you have written, by subject.</p>
       <div class="bars" id="categoryBars"></div>
     </div>
   </div>
 
   <div class="section card">
-    <h2>Unit economics</h2>
-    <p class="muted small">Costs are modelled from word counts; revenue is whatever you record per book in the editor.</p>
+    <h2>Distribution gaps</h2>
+    <p class="muted small">
+      Every title you have already written, and the storefronts it is not yet on.
+      This is the cheapest revenue in the catalogue — the book exists.
+    </p>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>Title</th><th>On sale at</th><th>Missing from</th><th>List price</th></tr></thead>
+        <tbody id="gapsTable"></tbody>
+      </table>
+    </div>
+  </div>
 
-    <form id="economicsForm" class="field-row" novalidate>
-      <label class="field">
-        <span>Production cost per 1,000 words ($)</span>
-        <input id="costPerK" class="input" type="number" min="0" step="0.01" required>
-      </label>
-      <label class="field">
-        <span>Fixed cost per title ($)</span>
-        <input id="fixedCost" class="input" type="number" min="0" step="1" required>
-      </label>
-      <label class="field">
-        <span>&nbsp;</span>
-        <button type="submit" class="btn primary">Save assumptions</button>
-      </label>
-    </form>
+  <div class="section card">
+    <h2>Revenue</h2>
+    <p class="muted small" id="revenueNote"></p>
 
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th>Title</th><th>Words</th><th>Est. cost</th><th>Revenue</th><th>Margin</th></tr></thead>
-        <tbody id="economicsTable"></tbody>
+        <thead><tr><th>Title</th><th>Stores</th><th>List price</th><th>Revenue recorded</th></tr></thead>
+        <tbody id="revenueTable"></tbody>
       </table>
     </div>
   </div>

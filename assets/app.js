@@ -103,8 +103,6 @@ var DEFAULT_SCHEDULE = {
 
 var DEFAULT_SETTINGS = {
   theme: "dark",
-  costPerK: 3.5,
-  fixedCost: 120
 };
 
 /* ---------------------------------------------------------
@@ -259,8 +257,17 @@ function toNum(value, fallback) {
 function formatNumber(n) { return Math.round(n).toLocaleString("en-US"); }
 
 function formatMoney(n) {
-  var sign = n < 0 ? "−" : "";
-  return sign + "$" + formatNumber(Math.abs(n));
+  var value = Number(n) || 0;
+  var sign = value < 0 ? "−" : "";
+  var abs = Math.abs(value);
+
+  // Round totals, but never a price: $7.99 shown as "$8" is simply wrong.
+  var digits = Number.isInteger(abs) ? 0 : 2;
+
+  return sign + "$" + abs.toLocaleString("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
 }
 
 function formatTime(ts) {
@@ -684,10 +691,6 @@ function artifactClass(value) {
   return "";
 }
 
-function estimatedCost(book) {
-  return (book.words.done / 1000) * toNum(state.settings.costPerK, 0) + toNum(state.settings.fixedCost, 0);
-}
-
 function summary() {
   var books = state.books;
   var counts = { LIVE: 0, READY: 0, RUNNING: 0, PIPELINE: 0, BLOCKED: 0, RELEASED: 0 };
@@ -698,7 +701,6 @@ function summary() {
   var target = books.reduce(function (sum, b) { return sum + b.words.target; }, 0);
   var chapters = books.reduce(function (sum, b) { return sum + b.chapters.done; }, 0);
   var revenue = books.reduce(function (sum, b) { return sum + b.revenue; }, 0);
-  var cost = books.reduce(function (sum, b) { return sum + estimatedCost(b); }, 0);
   var passing = books.filter(function (b) { return packageState(b).validator === "PASS"; }).length;
 
   return {
@@ -709,7 +711,6 @@ function summary() {
     target: target,
     chapters: chapters,
     revenue: revenue,
-    cost: cost,
     passing: passing,
     avgProgress: books.length
       ? Math.round(books.reduce(function (s, b) { return s + progressOf(b); }, 0) / books.length)
@@ -1537,49 +1538,70 @@ function renderPublishing() {
     : '<p class="muted small">Run the validator to produce a report.</p>';
 }
 
+/**
+ * Analytics for a catalogue that mostly already exists.
+ *
+ * The previous version measured the wrong things. It charted production events
+ * per day, which is permanently zero for books that are written and on sale;
+ * and it multiplied word counts by an API rate to produce a "cost" for books
+ * the author wrote themselves, then subtracted that fiction from revenue to
+ * get a fictional margin.
+ *
+ * What is actually true and actionable here is distribution: which titles are
+ * on which storefronts, and - the cheapest revenue available - which finished
+ * books are not yet listed somewhere they could be.
+ */
 function renderAnalytics() {
-  var s = summary();
-  var margin = s.revenue - s.cost;
+  var books = state.books;
+  var live = books.filter(isLive);
+
+  // Coverage per store. Single series, so no legend - the title names it.
+  var coverage = STORES.map(function (store) {
+    var titles = books.filter(function (b) {
+      return (b.liveOn || []).indexOf(store.id) >= 0 || (b.storefronts || {})[store.id];
+    });
+    return { store: store, count: titles.length, titles: titles.map(function (b) { return b.title; }) };
+  });
+
+  var listings = coverage.reduce(function (sum, c) { return sum + c.count; }, 0);
+  var revenue = books.reduce(function (sum, b) { return sum + (Number(b.revenue) || 0); }, 0);
+
+  // A gap is a finished book missing from a store. Only stores that carry at
+  // least one of your titles count - suggesting a storefront you have never
+  // used is noise, not a gap.
+  var usedStores = coverage.filter(function (c) { return c.count > 0; }).map(function (c) { return c.store; });
+  var gaps = live
+    .map(function (book) {
+      var on = liveStores(book);
+      var missing = usedStores.filter(function (store) {
+        return !on.some(function (s) { return s.id === store.id; });
+      });
+      return { book: book, on: on, missing: missing };
+    })
+    .filter(function (row) { return row.missing.length; })
+    .sort(function (a, b) { return b.missing.length - a.missing.length; });
+
+  var gapCount = gaps.reduce(function (sum, row) { return sum + row.missing.length; }, 0);
 
   $("analyticsMetrics").innerHTML = [
-    metricCard("Revenue recorded", formatMoney(s.revenue), "from the book editor"),
-    metricCard("Modelled cost", formatMoney(s.cost), "words × rate + fixed"),
-    metricCard("Margin", formatMoney(margin), margin >= 0 ? "in the black" : "in the red"),
-    metricCard("Portfolio", String(s.total), s.counts.RELEASED + " released · " + s.counts.BLOCKED + " blocked")
+    metricCard("Titles on sale", String(live.length), books.length + " written in total"),
+    metricCard("Storefront listings", String(listings), "across " + usedStores.length + " store(s)"),
+    metricCard("Distribution gaps", String(gapCount), gapCount ? "finished books not yet listed" : "every title is everywhere"),
+    metricCard("Revenue recorded", formatMoney(revenue), revenue ? "entered by hand" : "none entered yet")
   ].join("");
 
-  var days = [];
+  var coverageMax = Math.max.apply(null, coverage.map(function (c) { return c.count; }).concat([1]));
 
-  for (var i = 6; i >= 0; i--) {
-    var start = new Date();
-    start.setHours(0, 0, 0, 0);
-    start.setDate(start.getDate() - i);
-
-    var end = new Date(start);
-    end.setDate(end.getDate() + 1);
-
-    var count = state.activity.filter(function (entry) {
-      return entry.at >= start.getTime() && entry.at < end.getTime();
-    }).length;
-
-    days.push({ label: start.toLocaleDateString([], { weekday: "short" }), count: count });
-  }
-
-  var max = Math.max.apply(null, days.map(function (d) { return d.count; }).concat([1]));
-
-  $("activityChart").innerHTML = days.map(function (d) {
-    /* Cap at 88% so the value label above the bar always has room. */
-    var height = d.count ? Math.max(4, Math.round((d.count / max) * 88)) : 1;
-
-    return '<div class="col">' +
-      '<div class="bar-wrap"><span class="bar-value">' + d.count + "</span>" +
-      '<div class="bar" style="height:' + height + '%"></div></div>' +
-      '<span class="bar-label">' + escapeHTML(d.label) + "</span>" +
-      "</div>";
+  $("coverageBars").innerHTML = coverage.map(function (c) {
+    return '<div class="bars-row" title="' + escapeHTML(c.titles.join(", ") || "no titles yet") + '">' +
+      "<span>" + escapeHTML(c.store.label) + "</span>" +
+      '<span class="bars-track"><span class="bars-fill" style="width:' +
+        Math.round((c.count / coverageMax) * 100) + '%"></span></span>' +
+      '<span class="num">' + c.count + "</span></div>";
   }).join("");
 
   var byCategory = Object.create(null);
-  state.books.forEach(function (book) {
+  books.forEach(function (book) {
     byCategory[book.category] = (byCategory[book.category] || 0) + 1;
   });
 
@@ -1595,23 +1617,42 @@ function renderAnalytics() {
       }).join("")
     : '<p class="muted small">No categories yet.</p>';
 
-  $("costPerK").value = state.settings.costPerK;
-  $("fixedCost").value = state.settings.fixedCost;
-
-  $("economicsTable").innerHTML = state.books.length
-    ? state.books.slice().sort(function (a, b) { return b.words.done - a.words.done; }).map(function (book) {
-        var cost = estimatedCost(book);
-        var m = book.revenue - cost;
-
+  $("gapsTable").innerHTML = gaps.length
+    ? gaps.map(function (row) {
         return "<tr>" +
-          "<td>" + escapeHTML(book.title) + "</td>" +
-          '<td class="nowrap">' + formatNumber(book.words.done) + "</td>" +
-          '<td class="nowrap">' + formatMoney(cost) + "</td>" +
-          '<td class="nowrap">' + formatMoney(book.revenue) + "</td>" +
-          '<td class="nowrap">' + pill(formatMoney(m), m >= 0 ? "ok" : "bad") + "</td>" +
+          "<td>" + escapeHTML(row.book.title) + "</td>" +
+          "<td>" + row.on.map(function (s) { return pill(s.label, "ok"); }).join(" ") + "</td>" +
+          "<td>" + row.missing.map(function (s) { return pill(s.label, "warn"); }).join(" ") + "</td>" +
+          '<td class="nowrap">' + (row.book.listPriceUsd ? formatMoney(row.book.listPriceUsd) : "—") + "</td>" +
           "</tr>";
       }).join("")
-    : emptyRow(5, "No titles to cost.");
+    : emptyRow(
+        4,
+        live.length
+          ? "No gaps — every title on sale is listed on every store you use."
+          : "Nothing is marked on sale yet. Mark a title in the library and gaps will appear here.",
+      );
+
+  $("revenueNote").textContent = revenue
+    ? "Recorded per book in the editor. Gumroad figures can be pulled with `node src/cli.js gumroad-list`; Amazon and Google publish no sales API, so those stay manual."
+    : "No revenue recorded yet. Enter it per book in the editor, or pull Gumroad figures with `node src/cli.js gumroad-list`. Amazon and Google publish no sales API, so those stay manual.";
+
+  var sellable = live.length ? live : books;
+
+  $("revenueTable").innerHTML = sellable.length
+    ? sellable
+        .slice()
+        .sort(function (a, b) { return (b.revenue || 0) - (a.revenue || 0) || a.title.localeCompare(b.title); })
+        .map(function (book) {
+          var stores = liveStores(book);
+          return "<tr>" +
+            "<td>" + escapeHTML(book.title) + "</td>" +
+            '<td class="small muted">' + (stores.length ? escapeHTML(stores.map(function (s) { return s.label; }).join(", ")) : "not on sale") + "</td>" +
+            '<td class="nowrap">' + (book.listPriceUsd ? formatMoney(book.listPriceUsd) : "—") + "</td>" +
+            '<td class="nowrap">' + (book.revenue ? formatMoney(book.revenue) : '<span class="muted">—</span>') + "</td>" +
+            "</tr>";
+        }).join("")
+    : emptyRow(4, "No titles yet.");
 }
 
 function renderSettings() {
@@ -1720,7 +1761,6 @@ function viewBook(id) {
       statRow("Category", "<strong>" + escapeHTML(book.category) + "</strong>") +
       statRow("Author", "<strong>" + escapeHTML(book.author) + "</strong>") +
       statRow("Word target", "<strong>" + formatNumber(book.words.target) + "</strong>") +
-      statRow("Estimated cost", "<strong>" + formatMoney(estimatedCost(book)) + "</strong>") +
       statRow("Revenue", "<strong>" + formatMoney(book.revenue) + "</strong>") +
       statRow("Last updated", "<strong>" + relativeTime(book.updatedAt) + "</strong>") +
       (isLive(book)
@@ -2551,17 +2591,6 @@ $("scheduleForm").addEventListener("submit", function (event) {
   save();
   render();
   toast("Schedule saved.", "ok");
-});
-
-$("economicsForm").addEventListener("submit", function (event) {
-  event.preventDefault();
-
-  state.settings.costPerK = Math.max(0, toNum($("costPerK").value, DEFAULT_SETTINGS.costPerK));
-  state.settings.fixedCost = Math.max(0, toNum($("fixedCost").value, DEFAULT_SETTINGS.fixedCost));
-
-  save();
-  render();
-  toast("Cost assumptions saved.", "ok");
 });
 
 $("importFile").addEventListener("change", function () {
