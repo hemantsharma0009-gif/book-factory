@@ -64,6 +64,7 @@ export async function produceBook({
     plan,
     genre,
     chapters: written,
+    log,
     onProgress: (p) => log(`  edit: ${p.phase}${p.succeeded != null ? ` ${p.succeeded}/${p.total}` : ""}`),
   });
 
