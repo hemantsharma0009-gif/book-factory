@@ -2,7 +2,8 @@
 /**
  * Command line entry point.
  *
- *   generate [--genre id] [--chapters n] [--words n] [--images charts|none] [--dry-run]
+ *   generate [--genre id] [--language hi] [--chapters n] [--words n]
+           [--images charts|none] [--dry-run]
            [--sample n]          write only the first n chapters (default 2) to
                                  judge the prose cheaply before a full run
  *   status
@@ -11,6 +12,10 @@
  *   reject <bookId> [reason]
  *   publish <bookId> [--gumroad] [--dry-run]
  *   pack <bookId>                 write the KDP upload sheet
+ *   share <bookId> [--hours n] [--insecure]
+ *                                 serve this one book read-only on your LAN over
+ *                                 HTTPS, so you can read it on a phone before
+ *                                 approving
  *   schedule --cadence daily|weekly|fortnightly|monthly --time HH:MM [--off]
  *   next-due                      exit 0 if a run is due (for cron)
  */
@@ -22,6 +27,8 @@ import { buildKdpPack } from "./publish/kdp.js";
 import { publishToGumroad, listGumroadProducts } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt, isDue, shouldRun } from "./scheduler.js";
 import { GENRES } from "./genres.js";
+import { DEFAULTS, LANGUAGES } from "./config.js";
+import { createShareServer, mintLink, lanAddresses, makeCertificate } from "./share.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -53,6 +60,7 @@ async function main() {
         wordsPerChapter: Number(flag("words", 2200)),
         images: String(flag("images", "charts")),
         author: String(flag("author", "Book Factory Studio")),
+        language: String(flag("language", DEFAULTS.language)),
         sample: sampleFlag ? Number(sampleFlag === true ? 2 : sampleFlag) : 0,
         log,
       });
@@ -194,6 +202,93 @@ async function main() {
     }
 
     // Reconcile a hand-published catalogue with the dashboard.
+    case "share": {
+      const id = args[1];
+      const state = await store.load();
+      const book = store.findBook(state, id);
+      if (!book) throw new Error(`No book ${id}`);
+
+      const port = Number(process.env.BOOK_FACTORY_SHARE_PORT || 4322);
+      const hours = Number(flag("hours", 2));
+      const addresses = lanAddresses(port);
+
+      // HTTPS by default. The manuscript is unpublished work and the token
+      // that unlocks it rides in the URL; neither belongs in cleartext on a
+      // network you do not own.
+      let tls = null;
+      let fingerprint = null;
+      if (!flag("insecure")) {
+        try {
+          const made = makeCertificate(addresses.map((a) => new URL(a).hostname));
+          tls = { key: made.key, cert: made.cert };
+          fingerprint = made.fingerprint;
+        } catch (err) {
+          throw new Error(
+            `Could not generate a certificate (${err.message.trim().split("\n")[0]}).\n` +
+              `openssl is needed for HTTPS. Install it, or run with --insecure to serve\n` +
+              `plain HTTP - only do that on a network you trust.`,
+          );
+        }
+      }
+
+      const scheme = tls ? "https" : "http";
+      const { token, passcode } = mintLink(book.id, hours * 3600_000);
+      const server = createShareServer(tls, {
+        onDestroyed: () => log(`\nLink destroyed after ${5} wrong passcodes. Run share again for a new one.`),
+      });
+
+      // 0.0.0.0 on purpose: the whole point is that a phone can reach it. The
+      // review console, which can spend money and publish, stays on localhost.
+      await new Promise((resolve) => server.listen(port, "0.0.0.0", resolve));
+
+      log(`Sharing "${book.title}" read-only for ${hours} hour(s).\n`);
+      if (addresses.length) {
+        for (const base of addresses) log(`  ${base.replace(/^http:/, `${scheme}:`)}/s/${token}`);
+      } else {
+        log(`  ${scheme}://localhost:${port}/s/${token}   (no LAN address found)`);
+      }
+
+      log(`\n  Passcode: ${passcode.slice(0, 3)} ${passcode.slice(3)}\n`);
+      log(`The page asks for those six digits before it shows anything about the
+book - not even the title. So a link that gets forwarded, screenshotted or
+logged somewhere is not on its own enough to read the book. Five wrong
+attempts destroy the link.`);
+
+      if (tls) {
+        log(`
+Open that on your phone, on the same wifi. It can read the book and save the
+EPUB - nothing else. Approving and publishing stay on this machine.
+
+Your phone will warn that the certificate is not trusted. That is expected: no
+certificate authority will vouch for a private address like 192.168.x.x, so
+this one is self-signed and thrown away when you stop. Before you tap through,
+check the phone shows this fingerprint:
+
+  ${fingerprint}
+
+If it shows anything else, stop - something else is answering on that address.`);
+      } else {
+        log(`
+WARNING: --insecure means plain HTTP. The book and the link are readable by
+anyone who can watch traffic on this network. Only do this on a network you
+trust, and never with the port forwarded to the internet.`);
+      }
+
+      log(`\nCtrl-C stops sharing and kills the link.`);
+
+      // Hold the process open until interrupted.
+      await new Promise(() => {});
+      break;
+    }
+
+    case "languages": {
+      for (const l of Object.values(LANGUAGES)) {
+        log(`  ${l.code.padEnd(3)} ${l.name.padEnd(12)} ${l.endonym}`);
+      }
+      log(`\nUse: node src/cli.js generate --language hi`);
+      break;
+    }
+
     case "gumroad-list": {
       const products = await listGumroadProducts();
       if (!products.length) return log("No products found in that Gumroad account.");
@@ -227,6 +322,8 @@ async function main() {
            [--sample n]          write only the first n chapters (default 2) to
                                  judge the prose cheaply before a full run
   status | show <id> | genres
+  languages                       list the languages a book can be written in
+  share <id> [--hours n]          read it on your phone before approving
   approve <id> | reject <id> [reason]
   pack <id>                       write the KDP upload sheet
   publish <id> --gumroad [--dry-run]

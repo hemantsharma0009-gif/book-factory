@@ -1,8 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import https from "node:https";
+import { X509Certificate } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import JSZip from "jszip";
 import { nextGenre, nextAngle, GENRES } from "../src/genres.js";
 import { markdownToXhtml, buildEpub } from "../src/epub.js";
 import { buildKdpPack } from "../src/publish/kdp.js";
@@ -11,6 +15,7 @@ import { renderFigure } from "../src/illustrate/charts.js";
 import { genericTitleReason } from "../src/agents/title-check.js";
 import { stubPlan } from "../src/agents/planner.js";
 import { __test as __editor } from "../src/agents/editor.js";
+import { mintLink, revokeLink, createShareServer, makeCertificate, __test as __share } from "../src/share.js";
 
 test("genre rotation never repeats within the cooldown window", () => {
   const history = [];
@@ -158,6 +163,8 @@ test("charts carry direct labels and a data table", () => {
 function baseBook(overrides) {
   return {
     id: "bk_test",
+    genre: overrides.genre,
+    genreName: overrides.genreName,
     title: "A Title",
     subtitle: "A Subtitle",
     author: "Author",
@@ -165,12 +172,60 @@ function baseBook(overrides) {
     listing: {
       description: overrides.description || "A description.",
       keywords: overrides.keywords || ["one two", "three four", "five six", "seven eight", "nine ten", "eleven twelve", "thirteen"],
-      categories: ["A > B"],
+      categories: overrides.categories || ["A > B"],
       priceUsd: overrides.priceUsd || 9.99,
       priceRationale: "because",
     },
   };
 }
+
+test("kdp pack flags a novel filed on the nonfiction shelf", () => {
+  // Amazon does not make a category easy to change once a title is live, and a
+  // novel shelved under Reference is shown to the wrong readers from day one.
+  const book = baseBook({
+    genre: "adventure",
+    genreName: "Adventure",
+    categories: ["Nonfiction > Adventure", "Reference > Adventure"],
+  });
+  const pack = buildKdpPack({ book, epubName: "x.epub" });
+  assert.ok(
+    pack.warnings.some((w) => /Adventure is fiction/.test(w)),
+    `expected a shelf warning, got: ${pack.warnings.join(" | ")}`,
+  );
+});
+
+test("kdp pack accepts categories that match the genre", () => {
+  for (const [genre, categories] of [
+    ["adventure", ["Fiction > Adventure"]],
+    ["cooking", ["Nonfiction > Cooking", "Reference > Cooking"]],
+  ]) {
+    const pack = buildKdpPack({ book: baseBook({ genre, categories }), epubName: "x.epub" });
+    assert.equal(
+      pack.warnings.filter((w) => /wrong readers/.test(w)).length,
+      0,
+      `${genre} should not warn on ${categories.join(", ")}`,
+    );
+  }
+});
+
+test("kdp pack does not warn when only one category crosses the shelf", () => {
+  // A single crossover category is a deliberate reach for a second audience,
+  // not a mis-file; warning on it would train you to ignore the warnings.
+  const book = baseBook({
+    genre: "adventure",
+    categories: ["Fiction > Adventure", "Nonfiction > Adventure"],
+  });
+  const pack = buildKdpPack({ book, epubName: "x.epub" });
+  assert.equal(pack.warnings.filter((w) => /wrong readers/.test(w)).length, 0);
+});
+
+test("a stub plan for a fiction genre does not read like a how-to", () => {
+  const fiction = stubPlan({ genre: { id: "adventure", name: "Adventure", kind: "fiction" }, angle: "a lost city", chapters: 3 });
+  assert.doesNotMatch(fiction.subtitle, /practical guide/i);
+
+  const nonfiction = stubPlan({ genre: { id: "cooking", name: "Cooking", kind: "nonfiction" }, angle: "one-pan dinners", chapters: 3 });
+  assert.match(nonfiction.subtitle, /practical guide/i);
+});
 
 test("generic-title guard rejects titles that name their own genre", () => {
   const genre = { name: "Mystery", id: "mystery", kind: "fiction" };
@@ -405,4 +460,347 @@ test("sample mode writes fewer chapters but plans the whole book", async () => {
 
   delete process.env.BOOK_FACTORY_DRY_RUN;
   delete process.env.BOOK_FACTORY_DATA;
+});
+
+test("a stub fiction listing reads as English, not as a template", () => {
+  // "a adventure story" and "A novel of lost city" both shipped into a KDP
+  // sheet before these were fixed, and a listing is the first thing a buyer
+  // reads.
+  const plan = stubPlan({
+    genre: { id: "adventure", name: "Adventure", kind: "fiction" },
+    angle: "lost city",
+    chapters: 3,
+  });
+  assert.doesNotMatch(plan.audience, /\ba adventure\b/);
+  assert.match(plan.audience, /\ban adventure\b/);
+  assert.doesNotMatch(plan.subtitle, /novel of lost city/);
+});
+
+test("a non-English book is tagged in every place a reader looks", async () => {
+  // dc:language alone is not enough: a reading system takes hyphenation, font
+  // fallback and the speech voice from the xml:lang on each document.
+  const buffer = await buildEpub({
+    title: "शीर्षक", subtitle: "उपशीर्षक", author: "लेखक", description: "विवरण",
+    language: "hi",
+    chapters: [{ number: 1, title: "पहला अध्याय", body: "नमस्ते।" }],
+    figures: new Map(),
+  });
+
+  const zip = await JSZip.loadAsync(buffer);
+  const opf = await zip.file("OEBPS/content.opf").async("string");
+  assert.match(opf, /<dc:language>hi<\/dc:language>/);
+  assert.match(opf, /xml:lang="hi"/);
+
+  for (const name of ["OEBPS/title.xhtml", "OEBPS/chap001.xhtml", "OEBPS/nav.xhtml"]) {
+    const doc = await zip.file(name).async("string");
+    assert.match(doc, /lang="hi"/, `${name} is not tagged as Hindi`);
+    assert.doesNotMatch(doc, /lang="en"/, `${name} is still tagged as English`);
+  }
+});
+
+test("the book's own furniture is translated, not left in English", async () => {
+  const buffer = await buildEpub({
+    title: "शीर्षक", author: "लेखक", language: "hi",
+    chapters: [{ number: 3, title: "तीसरा", body: "पाठ।" }],
+    figures: new Map(),
+  });
+  const zip = await JSZip.loadAsync(buffer);
+
+  const nav = await zip.file("OEBPS/nav.xhtml").async("string");
+  assert.match(nav, /विषय-सूची/);
+  assert.doesNotMatch(nav, />Contents</);
+
+  const chapter = await zip.file("OEBPS/chap001.xhtml").async("string");
+  assert.match(chapter, /अध्याय 3/);
+  assert.doesNotMatch(chapter, /Chapter 3/);
+});
+
+test("an unlabelled language falls back to English rather than guessing", async () => {
+  // Better a Swedish book that says "Chapter" than one that says a word no
+  // one checked.
+  const buffer = await buildEpub({
+    title: "T", author: "A", language: "sv",
+    chapters: [{ number: 1, title: "Ett", body: "Hej." }],
+    figures: new Map(),
+  });
+  const zip = await JSZip.loadAsync(buffer);
+  const chapter = await zip.file("OEBPS/chap001.xhtml").async("string");
+  assert.match(chapter, /Chapter 1/);
+  assert.match(chapter, /lang="sv"/);   // still tagged correctly
+});
+
+test("a right-to-left language sets the text direction", async () => {
+  const buffer = await buildEpub({
+    title: "ع", author: "ع", language: "ar", rtl: true,
+    chapters: [{ number: 1, title: "الفصل", body: "نص." }],
+    figures: new Map(),
+  });
+  const zip = await JSZip.loadAsync(buffer);
+  assert.match(await zip.file("OEBPS/chap001.xhtml").async("string"), /dir="rtl"/);
+});
+
+test("the kdp sheet names the book's language and asks you to confirm it", () => {
+  const book = baseBook({ genre: "cooking" });
+  book.language = "hi";
+  const pack = buildKdpPack({ book, epubName: "x.epub" });
+  assert.match(pack.markdown, /\| Language \| Hindi \(हिन्दी\) \|/);
+  assert.match(pack.markdown, /Confirm \*\*Hindi\*\* appears in KDP's Language dropdown/);
+});
+
+test("the kdp sheet stays English-clean for an English book", () => {
+  const pack = buildKdpPack({ book: baseBook({ genre: "cooking" }), epubName: "x.epub" });
+  assert.match(pack.markdown, /\| Language \| English \|/);
+  assert.doesNotMatch(pack.markdown, /Language dropdown/);
+});
+
+test("an unknown language is a warning, not a silent English book", () => {
+  const book = baseBook({ genre: "cooking" });
+  book.language = "klingon";
+  const pack = buildKdpPack({ book, epubName: "x.epub" });
+  assert.ok(pack.warnings.some((w) => /Unknown language "klingon"/.test(w)));
+});
+
+test("a share link resolves only for its own token", () => {
+  const { token: a } = mintLink("bk_a");
+  const { token: b } = mintLink("bk_b");
+  assert.equal(__share.resolve(a).bookId, "bk_a");
+  assert.equal(__share.resolve(b).bookId, "bk_b");
+  assert.equal(__share.resolve("0".repeat(32)), null);
+  // Shapes that are not a token at all never reach the map.
+  for (const junk of ["", "abc", "../../etc/passwd", "ZZ".repeat(16), null, 42]) {
+    assert.equal(__share.resolve(junk), null, `resolved junk: ${junk}`);
+  }
+});
+
+test("a share link stops working when it expires", () => {
+  const { token } = mintLink("bk_x", -1);   // already expired
+  assert.equal(__share.resolve(token), null);
+});
+
+test("a revoked share link stops working immediately", () => {
+  const { token } = mintLink("bk_y");
+  assert.ok(__share.resolve(token));
+  assert.equal(revokeLink(token), true);
+  assert.equal(__share.resolve(token), null);
+});
+
+test("the share server refuses every write, whatever the path", async () => {
+  // Not "the write routes are guarded" - there are none. This probes the
+  // property that makes it safe to put on a LAN at all, by asking the running
+  // server rather than by grepping its source.
+  const server = createShareServer();
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const { token } = mintLink("bk_probe");
+
+  try {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      for (const path of [`/s/${token}`, "/api/state", "/api/books/bk_probe/approve",
+                          "/api/books/bk_probe/publish", "/api/generate"]) {
+        const res = await fetch(`${base}${path}`, { method });
+        assert.equal(res.status, 405, `${method} ${path} returned ${res.status}, not 405`);
+      }
+      // The single exception is submitting a passcode, and only by POST.
+      if (method !== "POST") {
+        const res = await fetch(`${base}/s/${token}/unlock`, { method });
+        assert.equal(res.status, 405, `${method} on unlock returned ${res.status}`);
+      }
+    }
+
+    // And a GET outside the three read routes is simply not there.
+    for (const path of ["/api/state", "/library/bk_probe/x.epub", "/", "/review.html"]) {
+      const res = await fetch(`${base}${path}`);
+      assert.equal(res.status, 404, `GET ${path} returned ${res.status}`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test("the share certificate covers every address a phone might use", () => {
+  const { key, cert, fingerprint } = makeCertificate(["192.168.1.14", "10.0.0.5"]);
+  const x = new X509Certificate(cert);
+
+  for (const address of ["127.0.0.1", "192.168.1.14", "10.0.0.5"]) {
+    assert.match(x.subjectAltName, new RegExp(address.replace(/\./g, "\\.")),
+      `${address} is missing from the certificate, so a phone there would refuse outright`);
+  }
+
+  // The fingerprint the command prints has to be the one the phone will show.
+  assert.equal(fingerprint, x.fingerprint256);
+  assert.match(key, /-----BEGIN PRIVATE KEY-----/);
+
+  // Short-lived by construction: it is thrown away with the session.
+  assert.ok(new Date(x.validTo) - new Date(x.validFrom) <= 2 * 86400000);
+});
+
+test("the share private key is not left on disk", () => {
+  const before = fsSync.readdirSync(os.tmpdir()).filter((f) => f.startsWith("book-factory-share-"));
+  makeCertificate(["192.168.1.14"]);
+  const after = fsSync.readdirSync(os.tmpdir()).filter((f) => f.startsWith("book-factory-share-"));
+  assert.deepEqual(after, before, "a temp directory holding the key survived");
+});
+
+test("every share response carries the headers that keep the link private", async () => {
+  const { key, cert } = makeCertificate([]);
+  const server = createShareServer({ key, cert });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+  const { token } = mintLink("bk_headers");
+
+  // A throwaway certificate is untrusted by definition, so this goes through
+  // node:https rather than fetch: the point is the headers, not the chain.
+  const head = (path) =>
+    new Promise((resolve, reject) => {
+      https
+        .get({ host: "127.0.0.1", port, path, rejectUnauthorized: false }, (res) => {
+          res.resume();
+          resolve(res.headers);
+        })
+        .on("error", reject);
+    });
+
+  try {
+    for (const path of [`/s/${token}`, `/s/${token}/epub`, "/nope"]) {
+      const headers = await head(path);
+      assert.match(headers["cache-control"] || "", /no-store/, `${path} is cacheable`);
+      assert.equal(headers["referrer-policy"], "no-referrer", `${path} could leak the token`);
+      assert.equal(headers["x-content-type-options"], "nosniff", `${path} allows sniffing`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test("the share server still works without TLS, for a trusted network", async () => {
+  // --insecure is a deliberate fallback for someone with no openssl; it must
+  // keep every other guarantee.
+  const server = createShareServer(null);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const res = await fetch(`${base}/s/${"0".repeat(32)}`);
+    assert.equal(res.status, 404);
+    assert.match(res.headers.get("cache-control") || "", /no-store/);
+    const write = await fetch(`${base}/api/books/x/publish`, { method: "POST" });
+    assert.equal(write.status, 405);
+  } finally {
+    server.close();
+  }
+});
+
+test("a share link shows nothing about the book without the passcode", async () => {
+  const server = createShareServer(null);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const { token } = mintLink("bk_mubd0w9f");
+
+  try {
+    for (const path of ["", "/read", "/epub"]) {
+      const res = await fetch(`${base}/s/${token}${path}`);
+      const body = await res.text();
+      assert.match(body, /Enter the passcode/, `${path || "/"} skipped the gate`);
+      // Not even the title leaks: whoever is looking has not proved they may see it.
+      assert.doesNotMatch(body, /One Pan/, `${path || "/"} leaked the book's title`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test("the right passcode opens the book, and the cookie is scoped and locked down", async () => {
+  const server = createShareServer(null);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const { token, passcode } = mintLink("bk_mubd0w9f");
+
+  try {
+    const res = await fetch(`${base}/s/${token}/unlock`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ passcode }),
+      redirect: "manual",
+    });
+    assert.equal(res.status, 303);
+
+    const cookie = res.headers.get("set-cookie");
+    assert.match(cookie, /HttpOnly/, "the cookie is readable by script");
+    assert.match(cookie, /SameSite=Strict/, "the cookie rides cross-site requests");
+    assert.match(cookie, new RegExp(`Path=/s/${token}`), "the cookie is not scoped to this link");
+
+    const value = cookie.match(/bf_share=([0-9a-f]+)/)[1];
+    const book = await fetch(`${base}/s/${token}`, { headers: { cookie: `bf_share=${value}` } });
+    assert.match(await book.text(), /One Pan/, "the passcode did not open the book");
+  } finally {
+    server.close();
+  }
+});
+
+test("one link's session does not open another link", async () => {
+  const server = createShareServer(null);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const mine = mintLink("bk_mubd0w9f");
+  const theirs = mintLink("bk_mubd0w9f");
+
+  try {
+    const res = await fetch(`${base}/s/${mine.token}/unlock`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ passcode: mine.passcode }),
+      redirect: "manual",
+    });
+    const value = res.headers.get("set-cookie").match(/bf_share=([0-9a-f]+)/)[1];
+
+    const other = await fetch(`${base}/s/${theirs.token}`, { headers: { cookie: `bf_share=${value}` } });
+    assert.match(await other.text(), /Enter the passcode/, "a session opened someone else's link");
+  } finally {
+    server.close();
+  }
+});
+
+test("five wrong passcodes destroy the link rather than locking it", async () => {
+  // A locked link is something an attacker can keep poking at. Destroying it
+  // costs you one command and costs them everything.
+  const server = createShareServer(null);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const { token, passcode } = mintLink("bk_mubd0w9f");
+  const wrong = passcode === "000000" ? "111111" : "000000";
+
+  const guess = (code) =>
+    fetch(`${base}/s/${token}/unlock`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ passcode: code }),
+      redirect: "manual",
+    });
+
+  try {
+    for (let i = 1; i <= __share.MAX_ATTEMPTS - 1; i++) {
+      const res = await guess(wrong);
+      assert.equal(res.status, 401, `attempt ${i} should be refused`);
+      assert.match(await res.text(), /attempt.? left/, "the page does not say how many tries remain");
+    }
+
+    const last = await guess(wrong);
+    assert.equal(last.status, 404, "the final wrong guess should destroy the link");
+
+    // Even the real passcode is no good now: the link is gone.
+    assert.equal((await guess(passcode)).status, 404);
+    assert.equal(__share.resolve(token), null);
+  } finally {
+    server.close();
+  }
+});
+
+test("passcodes are six digits and not predictable", () => {
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) {
+    const { passcode } = mintLink("bk_rand");
+    assert.match(passcode, /^\d{6}$/, `bad passcode shape: ${passcode}`);
+    seen.add(passcode);
+  }
+  // 200 draws from a million: a generator stuck in a rut shows up here.
+  assert.ok(seen.size > 190, `only ${seen.size} distinct passcodes in 200 draws`);
 });

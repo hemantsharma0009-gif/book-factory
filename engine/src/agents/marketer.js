@@ -6,7 +6,7 @@
  */
 import { z } from "zod";
 import { structured } from "../model.js";
-import { DEFAULTS } from "../config.js";
+import { DEFAULTS, LANGUAGES } from "../config.js";
 
 export const ListingSchema = z.object({
   description: z.string(),
@@ -29,8 +29,19 @@ not single generic words, and never words already in the title or subtitle), a d
 up to 4000 characters, and up to 3 browse categories. You do not stuff keywords,
 invent endorsements, fabricate reviews, or claim bestseller status.`;
 
-export async function writeListing({ plan, genre, wordCount, angle = "" }) {
-  const prompt = `Write the storefront listing for this book.
+export async function writeListing({ plan, genre, wordCount, angle = "", language = LANGUAGES.en }) {
+  // A Hindi book sold to Hindi readers needs a Hindi description and Hindi
+  // keywords - those are the words a buyer actually types into the search box.
+  const inLanguage = language.code === "en"
+    ? ""
+    : `
+Write the description, the short pitch and the keywords in ${language.name}
+(${language.endonym}), in the ${language.script} script - these are read and
+typed by ${language.name} readers. Keep the browse categories in English,
+because that is the language of the store's own category tree.
+`;
+
+  const prompt = `Write the storefront listing for this book.${inLanguage}
 
 TITLE: ${plan.title}
 SUBTITLE: ${plan.subtitle}
@@ -58,10 +69,14 @@ Produce:
     prompt,
     system: SYSTEM,
     stub: () => ({
-      description: `${plan.premise}\n\nThis book covers ${plan.chapters.length} chapters of practical material for ${plan.audience.toLowerCase()} Written to be read once and used many times.`,
+      description: genre.kind === "fiction"
+        ? `${plan.premise}\n\nA novel in ${plan.chapters.length} chapters for ${plan.audience.toLowerCase()}`
+        : `${plan.premise}\n\nThis book covers ${plan.chapters.length} chapters of practical material for ${plan.audience.toLowerCase()} Written to be read once and used many times.`,
       shortPitch: `${plan.title}: ${plan.subtitle}`.slice(0, 139),
       keywords: stubKeywords(plan, genre),
-      categories: [`Nonfiction > ${genre.name}`, `Reference > ${genre.name}`],
+      categories: genre.kind === "fiction"
+        ? [`Fiction > ${genre.name}`, `Fiction > ${genre.name} > General`]
+        : [`Nonfiction > ${genre.name}`, `Reference > ${genre.name}`],
       priceUsd: DEFAULTS.priceUsd,
       priceRationale: "Priced at the top of the 70% royalty band for a full-length title.",
       coverBrief: {

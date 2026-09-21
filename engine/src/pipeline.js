@@ -16,7 +16,7 @@ import { renderCover } from "./cover.js";
 import { buildEpub } from "./epub.js";
 import { nextGenre, nextAngle, genreById } from "./genres.js";
 import { spendReport } from "./model.js";
-import { DEFAULTS, MODEL } from "./config.js";
+import { DEFAULTS, MODEL, languageById } from "./config.js";
 import * as store from "./store.js";
 
 /**
@@ -35,6 +35,7 @@ export async function produceBook({
   wordsPerChapter = DEFAULTS.wordsPerChapter,
   images = "charts",
   author = "Book Factory Studio",
+  language: languageId = DEFAULTS.language,
   /**
    * Sample mode: plan the whole book but write only the first few chapters.
    * The point is to judge PROSE for about a tenth of the cost, before
@@ -48,13 +49,17 @@ export async function produceBook({
 
   const genre = genreId ? genreById(genreId) : nextGenre(state.genreHistory.map((h) => h.genre));
   if (!genre) throw new Error(`Unknown genre "${genreId}".`);
+
+  const language = languageById(languageId);
+  if (!language) throw new Error(`Unknown language "${languageId}".`);
   const angle = nextAngle(genre, state.genreHistory);
 
   const id = `bk_${Date.now().toString(36)}`;
   log(`Genre: ${genre.name} — ${angle}`);
+  if (language.code !== "en") log(`Language: ${language.name} (${language.endonym})`);
 
   log("Planning…");
-  const fullPlan = await planBook({ genre, angle, chapters, wordsPerChapter });
+  const fullPlan = await planBook({ genre, angle, chapters, wordsPerChapter, language });
   log(`Planned "${fullPlan.title}" (${fullPlan.chapters.length} chapters)`);
   await store.writeArtifact(id, "plan.json", JSON.stringify(fullPlan, null, 2));
 
@@ -73,6 +78,7 @@ export async function produceBook({
     plan,
     genre,
     wordsPerChapter,
+    language,
     onProgress: (p) => log(`  draft: ${p.phase}${p.succeeded != null ? ` ${p.succeeded}/${p.total}` : ""}`),
   });
 
@@ -81,6 +87,7 @@ export async function produceBook({
     plan,
     genre,
     chapters: written,
+    language,
     log,
     onProgress: (p) => log(`  edit: ${p.phase}${p.succeeded != null ? ` ${p.succeeded}/${p.total}` : ""}`),
   });
@@ -93,7 +100,7 @@ export async function produceBook({
   log(`  ${figures.size} figure(s)`);
 
   log("Writing listing…");
-  const listing = await writeListing({ plan, genre, wordCount, angle });
+  const listing = await writeListing({ plan, genre, wordCount, angle, language });
 
   const coverSvg = renderCover({
     title: plan.title,
@@ -111,7 +118,8 @@ export async function produceBook({
     subtitle: plan.subtitle,
     author,
     publisher: author,
-    language: "en",
+    language: language.code,
+    rtl: Boolean(language.rtl),
     description: listing.description,
     chapters: written,
     figures,
@@ -138,6 +146,8 @@ export async function produceBook({
     genre: genre.id,
     genreName: genre.name,
     angle,
+    language: language.code,
+    languageName: language.name,
     status: "awaiting_approval",
     createdAt: Date.now(),
     updatedAt: Date.now(),

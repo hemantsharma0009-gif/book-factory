@@ -7,6 +7,8 @@
  * uploading is copy-paste rather than authoring.
  */
 import { AI_DISCLOSURE } from "../pipeline.js";
+import { GENRES } from "../genres.js";
+import { languageById } from "../config.js";
 
 /** KDP's own limits, enforced here so you find out now rather than at the form. */
 const LIMITS = { title: 200, subtitle: 200, description: 4000, keywords: 7, keywordChars: 50 };
@@ -47,6 +49,31 @@ export function buildKdpPack({ book, epubName }) {
     }
   });
 
+  // A novel filed under Nonfiction lands in the wrong store shelf, next to the
+  // wrong competitors, and Amazon does not make the category easy to change
+  // once the title is live - so it is worth catching before the form, not after.
+  // KDP changes its accepted-language list, so the sheet names the language
+  // and tells you to confirm it in the dropdown rather than asserting support.
+  const language = languageById(book.language) || languageById("en");
+  if (book.language && !languageById(book.language)) {
+    warnings.push(`Unknown language "${book.language}" - the sheet falls back to English.`);
+  }
+
+  const kind = (GENRES.find((g) => g.id === book.genre) || {}).kind;
+  if (kind) {
+    const fictionShelf = /^\s*(fiction|literature)\b/i;
+    const nonfictionShelf = /^\s*(nonfiction|non-fiction|reference)\b/i;
+    const wrong = listing.categories.filter((c) =>
+      kind === "fiction" ? nonfictionShelf.test(c) : fictionShelf.test(c),
+    );
+    if (wrong.length === listing.categories.length && wrong.length) {
+      warnings.push(
+        `${book.genreName || book.genre} is ${kind}, but every category is filed under ` +
+          `the other shelf (${wrong.join(", ")}). Amazon will show this book to the wrong readers.`,
+      );
+    }
+  }
+
   // Amazon pays 70% only inside this band; outside it the rate halves, so a
   // higher price can earn less per sale. Quote the Amazon price specifically.
   const amazonPrice = book.prices?.amazon || listing.priceUsd;
@@ -65,7 +92,7 @@ sheet. Fields are in the order KDP asks for them.
 
 | Field | Value |
 |---|---|
-| Language | English |
+| Language | ${language.name}${language.code === "en" ? "" : ` (${language.endonym})`} |
 | Book Title | \`${book.title}\` |
 | Subtitle | \`${book.subtitle}\` |
 | Series | — |
@@ -79,7 +106,9 @@ sheet. Fields are in the order KDP asks for them.
 ${listing.description}
 \`\`\`
 
-**Publishing rights:** I own the copyright and hold the necessary publishing rights.
+${language.code === "en" ? "" : `> Confirm **${language.name}** appears in KDP's Language dropdown before you start - Amazon's accepted list differs by marketplace and changes.
+
+`}**Publishing rights:** I own the copyright and hold the necessary publishing rights.
 
 **AI-Generated Content:** ☑ **Yes** — this title contains AI-generated content.
 When KDP asks which parts: **text** (AI-generated, then edited)${book.figureCount ? " and **images** (generated charts)" : ""}.

@@ -87,10 +87,15 @@ table.figure-data th[scope="row"] { text-align: left; }
 .title-page .author { margin-top: 3em; font-size: 1em; letter-spacing: 0.1em; }
 .front-note { font-size: 0.85em; color: #555; margin-top: 4em; }`;
 
-function xhtml(title, body) {
+/**
+ * `lang` is not decoration: a reading system picks hyphenation, line breaking,
+ * font fallback and the text-to-speech voice from it. A Hindi book tagged "en"
+ * is hyphenated as though it were English.
+ */
+function xhtml(title, body, lang = "en", rtl = false) {
   return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en" xml:lang="en">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${esc(lang)}" xml:lang="${esc(lang)}"${rtl ? ' dir="rtl"' : ""}>
 <head>
 <meta charset="utf-8"/>
 <title>${esc(title)}</title>
@@ -103,13 +108,42 @@ ${body}
 }
 
 /**
- * @param {object} book  { title, subtitle, author, language, description, chapters, figures, coverSvg, aiDisclosure }
+ * The handful of words the EPUB itself contributes - the ones that are not the
+ * author's text. A Hindi book whose table of contents is headed "Contents" and
+ * whose chapters are labelled "Chapter 3" is only half translated.
+ *
+ * A language with no entry here falls back to English rather than guessing.
+ * These were written to be checked by a speaker of each language, not to be
+ * trusted blindly.
+ */
+const LABELS = {
+  en: { cover: "Cover", contents: "Contents", chapter: "Chapter", titlePage: "Title page", begin: "Begin reading" },
+  hi: { cover: "आवरण", contents: "विषय-सूची", chapter: "अध्याय", titlePage: "शीर्षक पृष्ठ", begin: "पढ़ना शुरू करें" },
+  mr: { cover: "मुखपृष्ठ", contents: "अनुक्रमणिका", chapter: "प्रकरण", titlePage: "शीर्षक पृष्ठ", begin: "वाचन सुरू करा" },
+  bn: { cover: "প্রচ্ছদ", contents: "সূচিপত্র", chapter: "অধ্যায়", titlePage: "শিরোনাম পৃষ্ঠা", begin: "পড়া শুরু করুন" },
+  gu: { cover: "મુખપૃષ્ઠ", contents: "અનુક્રમણિકા", chapter: "પ્રકરણ", titlePage: "શીર્ષક પૃષ્ઠ", begin: "વાંચવાનું શરૂ કરો" },
+  ta: { cover: "அட்டை", contents: "பொருளடக்கம்", chapter: "அத்தியாயம்", titlePage: "தலைப்புப் பக்கம்", begin: "படிக்கத் தொடங்கு" },
+  te: { cover: "ముఖచిత్రం", contents: "విషయసూచిక", chapter: "అధ్యాయం", titlePage: "శీర్షిక పేజీ", begin: "చదవడం ప్రారంభించండి" },
+  ml: { cover: "പുറംചട്ട", contents: "ഉള്ളടക്കം", chapter: "അധ്യായം", titlePage: "ശീർഷക പേജ്", begin: "വായന തുടങ്ങുക" },
+  es: { cover: "Portada", contents: "Índice", chapter: "Capítulo", titlePage: "Portadilla", begin: "Empezar a leer" },
+  fr: { cover: "Couverture", contents: "Table des matières", chapter: "Chapitre", titlePage: "Page de titre", begin: "Commencer la lecture" },
+  de: { cover: "Umschlag", contents: "Inhalt", chapter: "Kapitel", titlePage: "Titelseite", begin: "Lesen beginnen" },
+  pt: { cover: "Capa", contents: "Sumário", chapter: "Capítulo", titlePage: "Folha de rosto", begin: "Começar a ler" },
+  ar: { cover: "الغلاف", contents: "المحتويات", chapter: "الفصل", titlePage: "صفحة العنوان", begin: "ابدأ القراءة" },
+};
+
+/**
+ * @param {object} book  { title, subtitle, author, language, rtl, description, chapters, figures, coverSvg, aiDisclosure }
  * @returns {Promise<Buffer>}
  */
 export async function buildEpub(book) {
   const zip = new JSZip();
   const uuid = book.uuid || randomUUID();
   const modified = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const lang = book.language || "en";
+  const rtl = Boolean(book.rtl);
+  // Match on the base tag, so "pt-BR" still finds the Portuguese labels.
+  const label = LABELS[lang] || LABELS[lang.split("-")[0]] || LABELS.en;
 
   // 1. mimetype - first entry, stored uncompressed.
   zip.file("mimetype", "application/epub+zip", { compression: "STORE" });
@@ -134,8 +168,10 @@ export async function buildEpub(book) {
     oebps.file(
       "cover.xhtml",
       xhtml(
-        "Cover",
+        label.cover,
         `<div style="text-align:center;margin:0;padding:0"><img src="cover.svg" alt="${esc(book.title)}"/></div>`,
+        lang,
+        rtl,
       ),
     );
     manifest.push('<item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>');
@@ -152,6 +188,8 @@ ${book.subtitle ? `<p class="subtitle">${esc(book.subtitle)}</p>` : ""}
 <p class="author">${esc(book.author)}</p>
 ${book.aiDisclosure ? `<p class="front-note">${esc(book.aiDisclosure)}</p>` : ""}
 </div>`,
+      lang,
+      rtl,
     ),
   );
   manifest.push('<item id="titlepage" href="title.xhtml" media-type="application/xhtml+xml"/>');
@@ -185,10 +223,12 @@ ${figure.table || ""}
       xhtml(
         chapter.title,
         `<section epub:type="chapter">
-<p class="chapter-number">Chapter ${chapter.number}</p>
+<p class="chapter-number">${esc(label.chapter)} ${chapter.number}</p>
 <h1>${esc(chapter.title.replace(/^Chapter\s+\d+:\s*/i, ""))}</h1>
 ${bodyHtml}
 </section>`,
+        lang,
+        rtl,
       ),
     );
     manifest.push(`<item id="${id}" href="${id}.xhtml" media-type="application/xhtml+xml"/>`);
@@ -207,15 +247,15 @@ ${bodyHtml}
     "nav.xhtml",
     `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en" xml:lang="en">
-<head><meta charset="utf-8"/><title>Contents</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${esc(lang)}" xml:lang="${esc(lang)}"${rtl ? ' dir="rtl"' : ""}>
+<head><meta charset="utf-8"/><title>${esc(label.contents)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body>
-<nav epub:type="toc" id="toc"><h1>Contents</h1><ol>
-<li><a href="title.xhtml">Title page</a></li>
+<nav epub:type="toc" id="toc"><h1>${esc(label.contents)}</h1><ol>
+<li><a href="title.xhtml">${esc(label.titlePage)}</a></li>
 ${navItems}
 </ol></nav>
 <nav epub:type="landmarks" hidden="hidden"><ol>
-<li><a epub:type="bodymatter" href="chap001.xhtml">Begin reading</a></li>
+<li><a epub:type="bodymatter" href="chap001.xhtml">${esc(label.begin)}</a></li>
 </ol></nav>
 </body>
 </html>`,
@@ -225,7 +265,7 @@ ${navItems}
   oebps.file(
     "content.opf",
     `<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" xml:lang="en">
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" xml:lang="${esc(lang)}">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
 <dc:identifier id="pub-id">urn:uuid:${uuid}</dc:identifier>
 <dc:title>${esc(book.title)}</dc:title>

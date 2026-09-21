@@ -40,6 +40,8 @@
     <p id="sub">Nothing is published until you approve it.</p>
   </div>
   <div class="top-actions">
+    <label class="small muted" for="genLanguage">Language</label>
+    <select id="genLanguage" class="input" style="width:auto"></select>
     <button class="btn" id="refresh">Refresh</button>
     <button class="btn primary" id="generate">Generate a book</button>
   </div>
@@ -127,6 +129,13 @@ function renderSchedule() {
     ? `Next run ${new Date(state.nextRunAt).toLocaleString()}`
     : "No run scheduled";
 
+  const langSelect = $("genLanguage");
+  if (langSelect && !langSelect.options.length && state.languages) {
+    langSelect.innerHTML = state.languages
+      .map((l) => `<option value="${esc(l.code)}">${esc(l.name)}${l.code === "en" ? "" : ` — ${esc(l.endonym)}`}</option>`)
+      .join("");
+  }
+
   const history = state.genreHistory || [];
   $("genreHistory").textContent = history.length
     ? "Recent genres (never repeats): " + history.map((h) => h.genre).join(" → ")
@@ -166,6 +175,7 @@ async function renderDetail(book) {
         <dl class="kv">
           <dt>Status</dt><dd><span class="pill ${statusKind(book.status)}">${esc(book.status.replace(/_/g, " "))}</span></dd>
           <dt>Genre</dt><dd>${esc(book.genreName)} — ${esc(book.angle)}</dd>
+          ${book.language && book.language !== "en" ? `<dt>Language</dt><dd>${esc(book.languageName || book.language)}</dd>` : ""}
           <dt>Length</dt><dd>${book.wordCount.toLocaleString()} words · ${book.chapterCount} chapters · ${book.figureCount} figures</dd>
           <dt>Price</dt><dd>$${l.priceUsd.toFixed(2)} — ${esc(l.priceRationale)}</dd>
           <dt>Model</dt><dd>${esc(book.model)}</dd>
@@ -180,7 +190,7 @@ async function renderDetail(book) {
     <div class="chips" style="margin:10px 0">${l.keywords.map((k) => `<span class="chip">${esc(k)}</span>`).join("")}</div>
 
     <h3 style="margin-top:18px">Manuscript</h3>
-    <div class="reader" id="reader"><p class="muted small">Loading…</p></div>
+    <div class="reader" id="reader" lang="${esc(book.language || "en")}"><p class="muted small">Loading…</p></div>
 
     <div class="actions" style="margin-top:16px">
       ${book.status === "awaiting_approval" ? `
@@ -190,7 +200,8 @@ async function renderDetail(book) {
         <button class="btn" data-act="publish-dry">Preview Gumroad payload</button>
         <button class="btn primary" data-act="publish">Publish to Gumroad</button>` : ""}
       <a class="btn" href="/api/books/${esc(book.id)}/kdp" target="_blank" rel="noopener">KDP upload sheet</a>
-      <a class="btn" href="/library/${esc(book.id)}/${esc(book.epubFile)}">Download EPUB</a>
+      <a class="btn" href="/library/${esc(book.id)}/${esc(book.epubFile)}"
+         download="${esc(book.epubFile)}">Download EPUB (${(book.epubBytes / 1024).toFixed(0)} KB)</a>
     </div>`;
 
   const md = await (await fetch(`/api/books/${book.id}/manuscript`)).text();
@@ -251,7 +262,8 @@ $("refresh").addEventListener("click", () => refresh().catch((e) => toast(e.mess
 $("generate").addEventListener("click", async () => {
   const dryRun = !confirm("Generate for real? This spends money on the API.\n\nOK = real run, Cancel = dry run (free).");
   try {
-    await api("/api/generate", { method: "POST", body: JSON.stringify({ dryRun }) });
+    const language = $("genLanguage").value || "en";
+    await api("/api/generate", { method: "POST", body: JSON.stringify({ dryRun, language }) });
     toast(dryRun ? "Dry run started." : "Generation started.", "ok");
     const timer = setInterval(async () => {
       await refresh();

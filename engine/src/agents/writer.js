@@ -4,8 +4,8 @@
 import { batchProse } from "../model.js";
 import { buildBible } from "./planner.js";
 
-export async function draftChapters({ plan, genre, wordsPerChapter, onProgress }) {
-  const bible = buildBible(plan, genre);
+export async function draftChapters({ plan, genre, wordsPerChapter, onProgress, language }) {
+  const bible = buildBible(plan, genre, language);
 
   const jobs = plan.chapters.map((chapter) => ({
     id: `ch-${String(chapter.number).padStart(3, "0")}`,
