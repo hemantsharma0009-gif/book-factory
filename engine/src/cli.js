@@ -12,6 +12,8 @@
  *   reject <bookId> [reason]
  *   publish <bookId> [--gumroad] [--dry-run]
  *   pack <bookId>                 write the KDP upload sheet
+ *   share <bookId> [--hours n]    serve this one book read-only on your LAN,
+ *                                 so you can read it on a phone before approving
  *   schedule --cadence daily|weekly|fortnightly|monthly --time HH:MM [--off]
  *   next-due                      exit 0 if a run is due (for cron)
  */
@@ -24,6 +26,7 @@ import { publishToGumroad, listGumroadProducts } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt, isDue, shouldRun } from "./scheduler.js";
 import { GENRES } from "./genres.js";
 import { DEFAULTS, LANGUAGES } from "./config.js";
+import { createShareServer, mintLink, lanAddresses } from "./share.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -197,6 +200,42 @@ async function main() {
     }
 
     // Reconcile a hand-published catalogue with the dashboard.
+    case "share": {
+      const id = args[1];
+      const state = await store.load();
+      const book = store.findBook(state, id);
+      if (!book) throw new Error(`No book ${id}`);
+
+      const port = Number(process.env.BOOK_FACTORY_SHARE_PORT || 4322);
+      const hours = Number(flag("hours", 24));
+      const token = mintLink(book.id, hours * 3600_000);
+      const server = createShareServer();
+
+      // 0.0.0.0 on purpose: the whole point is that a phone can reach it. The
+      // review console, which can spend money and publish, stays on localhost.
+      await new Promise((resolve) => server.listen(port, "0.0.0.0", resolve));
+
+      const addresses = lanAddresses(port);
+      log(`Sharing "${book.title}" read-only for ${hours} hour(s).\n`);
+      if (addresses.length) {
+        for (const base of addresses) log(`  ${base}/s/${token}`);
+      } else {
+        log(`  http://localhost:${port}/s/${token}   (no LAN address found)`);
+      }
+      log(`
+Open that on your phone, on the same wifi. It can read the book and save the
+EPUB - nothing else. Approving and publishing stay on this machine.
+
+This is plain HTTP on your local network: anyone on this wifi who has the link
+can read the book. Do not forward the port to the internet.
+
+Ctrl-C stops sharing and kills the link.`);
+
+      // Hold the process open until interrupted.
+      await new Promise(() => {});
+      break;
+    }
+
     case "languages": {
       for (const l of Object.values(LANGUAGES)) {
         log(`  ${l.code.padEnd(3)} ${l.name.padEnd(12)} ${l.endonym}`);
@@ -239,6 +278,7 @@ async function main() {
                                  judge the prose cheaply before a full run
   status | show <id> | genres
   languages                       list the languages a book can be written in
+  share <id> [--hours n]          read it on your phone before approving
   approve <id> | reject <id> [reason]
   pack <id>                       write the KDP upload sheet
   publish <id> --gumroad [--dry-run]

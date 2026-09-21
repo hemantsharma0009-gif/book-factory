@@ -98,3 +98,25 @@ npx http-server -p 8099 .   # or: python3 -m http.server 8099
 ```
 
 Then open <http://127.0.0.1:8099/>.
+
+## Reading a book on your phone before you approve it
+
+The review console binds to `127.0.0.1` because it can spend API money and
+publish to a live storefront. That keeps it off your network - and also out of
+reach of the phone you would rather read the book on.
+
+`share` solves that with a second, deliberately separate server:
+
+```bash
+node src/cli.js share <bookId> --hours 4
+```
+
+It prints a link for every address your machine has on the LAN. Open one on a
+phone on the same wifi: you can read the manuscript and save the EPUB, and
+that is all. There is no approve, reject, publish or generate route in that
+server - not disabled, absent.
+
+Each link carries a 128-bit token scoped to one book, expires (24 hours by
+default), and dies when you stop the command. It is plain HTTP on a local
+network, so treat a live link as readable by anyone on that wifi, and do not
+forward the port to the internet.

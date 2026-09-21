@@ -12,6 +12,7 @@ import { renderFigure } from "../src/illustrate/charts.js";
 import { genericTitleReason } from "../src/agents/title-check.js";
 import { stubPlan } from "../src/agents/planner.js";
 import { __test as __editor } from "../src/agents/editor.js";
+import { mintLink, revokeLink, createShareServer, __test as __share } from "../src/share.js";
 
 test("genre rotation never repeats within the cooldown window", () => {
   const history = [];
@@ -554,4 +555,56 @@ test("an unknown language is a warning, not a silent English book", () => {
   book.language = "klingon";
   const pack = buildKdpPack({ book, epubName: "x.epub" });
   assert.ok(pack.warnings.some((w) => /Unknown language "klingon"/.test(w)));
+});
+
+test("a share link resolves only for its own token", () => {
+  const a = mintLink("bk_a");
+  const b = mintLink("bk_b");
+  assert.equal(__share.resolve(a).bookId, "bk_a");
+  assert.equal(__share.resolve(b).bookId, "bk_b");
+  assert.equal(__share.resolve("0".repeat(32)), null);
+  // Shapes that are not a token at all never reach the map.
+  for (const junk of ["", "abc", "../../etc/passwd", "ZZ".repeat(16), null, 42]) {
+    assert.equal(__share.resolve(junk), null, `resolved junk: ${junk}`);
+  }
+});
+
+test("a share link stops working when it expires", () => {
+  const token = mintLink("bk_x", -1);   // already expired
+  assert.equal(__share.resolve(token), null);
+});
+
+test("a revoked share link stops working immediately", () => {
+  const token = mintLink("bk_y");
+  assert.ok(__share.resolve(token));
+  assert.equal(revokeLink(token), true);
+  assert.equal(__share.resolve(token), null);
+});
+
+test("the share server refuses every write, whatever the path", async () => {
+  // Not "the write routes are guarded" - there are none. This probes the
+  // property that makes it safe to put on a LAN at all, by asking the running
+  // server rather than by grepping its source.
+  const server = createShareServer();
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const token = mintLink("bk_probe");
+
+  try {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      for (const path of [`/s/${token}`, "/api/state", "/api/books/bk_probe/approve",
+                          "/api/books/bk_probe/publish", "/api/generate"]) {
+        const res = await fetch(`${base}${path}`, { method });
+        assert.equal(res.status, 405, `${method} ${path} returned ${res.status}, not 405`);
+      }
+    }
+
+    // And a GET outside the three read routes is simply not there.
+    for (const path of ["/api/state", "/library/bk_probe/x.epub", "/", "/review.html"]) {
+      const res = await fetch(`${base}${path}`);
+      assert.equal(res.status, 404, `GET ${path} returned ${res.status}`);
+    }
+  } finally {
+    server.close();
+  }
 });
