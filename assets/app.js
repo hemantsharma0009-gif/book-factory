@@ -1733,7 +1733,7 @@ function renderAnalytics() {
     var titles = books.filter(function (b) {
       return (b.liveOn || []).indexOf(store.id) >= 0 || (b.storefronts || {})[store.id];
     });
-    return { store: store, count: titles.length, titles: titles.map(function (b) { return b.title; }) };
+    return { store: store, count: titles.length };
   });
 
   var listings = coverage.reduce(function (sum, c) { return sum + c.count; }, 0);
@@ -1743,34 +1743,47 @@ function renderAnalytics() {
   // least one of your titles count - suggesting a storefront you have never
   // used is noise, not a gap.
   var usedStores = coverage.filter(function (c) { return c.count > 0; }).map(function (c) { return c.store; });
-  var gaps = live
-    .map(function (book) {
-      var on = liveStores(book);
-      var missing = usedStores.filter(function (store) {
-        return !on.some(function (s) { return s.id === store.id; });
-      });
-      return { book: book, on: on, missing: missing };
-    })
-    .filter(function (row) { return row.missing.length; })
-    .sort(function (a, b) { return b.missing.length - a.missing.length; });
+  var gaps = booksWithGaps();
 
   var gapCount = gaps.reduce(function (sum, row) { return sum + row.missing.length; }, 0);
 
-  $("analyticsMetrics").innerHTML = [
-    metricCard("Titles on sale", String(live.length), books.length + " written in total"),
-    metricCard("Storefront listings", String(listings), "across " + usedStores.length + " store(s)"),
-    metricCard("Distribution gaps", String(gapCount), gapCount ? "finished books not yet listed" : "every title is everywhere"),
-    metricCard("Revenue recorded", formatMoney(revenue), revenue ? "entered by hand" : "none entered yet")
-  ].join("");
+  var tiles = [
+    { key: "onsale", label: "Titles on sale", value: String(live.length), note: books.length + " written in total" },
+    { key: "listings", label: "Storefront listings", value: String(listings),
+      note: "across " + usedStores.length + " store(s)" },
+    // The gaps table below already answers this one in more detail than a
+    // drill could, so the tile jumps to it rather than printing it twice.
+    { key: "gaps", label: "Distribution gaps", value: String(gapCount), jump: "gapsCard",
+      note: gapCount ? "finished books not yet listed" : "every title is everywhere" },
+    { key: "revenue", label: "Revenue recorded", value: formatMoney(revenue),
+      note: revenue ? "entered by hand" : "none entered yet" }
+  ];
+
+  $("analyticsMetrics").innerHTML = tiles.map(function (tile) {
+    var selected = ui.drill && ui.drill.type === "metric" && ui.drill.key === tile.key;
+    var hook = tile.jump
+      ? 'data-jump="' + escapeHTML(tile.jump) + '"'
+      : 'data-drill="metric" data-key="' + escapeHTML(tile.key) +
+        '" data-label="' + escapeHTML(tile.label) +
+        '" aria-pressed="' + (selected ? "true" : "false") + '"';
+    return '<button type="button" class="card clickable" ' + hook + ">" +
+      '<div class="label">' + escapeHTML(tile.label) + "</div>" +
+      '<div class="metric">' + escapeHTML(tile.value) + "</div>" +
+      '<div class="muted small">' + escapeHTML(tile.note) + "</div>" +
+      "</button>";
+  }).join("");
 
   var coverageMax = Math.max.apply(null, coverage.map(function (c) { return c.count; }).concat([1]));
 
   $("coverageBars").innerHTML = coverage.map(function (c) {
-    return '<div class="bars-row" title="' + escapeHTML(c.titles.join(", ") || "no titles yet") + '">' +
+    var selected = ui.drill && ui.drill.type === "store" && ui.drill.key === c.store.id;
+    return '<button type="button" class="bars-row" data-drill="store" data-key="' +
+      escapeHTML(c.store.id) + '" data-label="' + escapeHTML(c.store.label) +
+      '" aria-pressed="' + (selected ? "true" : "false") + '">' +
       "<span>" + escapeHTML(c.store.label) + "</span>" +
       '<span class="bars-track"><span class="bars-fill" style="width:' +
         Math.round((c.count / coverageMax) * 100) + '%"></span></span>' +
-      '<span class="num">' + c.count + "</span></div>";
+      '<span class="num">' + c.count + "</span></button>";
   }).join("");
 
   var byCategory = Object.create(null);
@@ -1783,10 +1796,14 @@ function renderAnalytics() {
 
   $("categoryBars").innerHTML = categories.length
     ? categories.map(function (name) {
-        return '<div class="bars-row"><span>' + escapeHTML(name) + "</span>" +
+        var selected = ui.drill && ui.drill.type === "category" && ui.drill.key === name;
+        return '<button type="button" class="bars-row" data-drill="category" data-key="' +
+          escapeHTML(name) + '" data-label="' + escapeHTML(name) +
+          '" aria-pressed="' + (selected ? "true" : "false") + '">' +
+          "<span>" + escapeHTML(name) + "</span>" +
           '<span class="bars-track"><span class="bars-fill" style="width:' +
             Math.round((byCategory[name] / catMax) * 100) + '%"></span></span>' +
-          '<span class="num">' + byCategory[name] + "</span></div>";
+          '<span class="num">' + byCategory[name] + "</span></button>";
       }).join("")
     : '<p class="muted small">No categories yet.</p>';
 
@@ -1811,6 +1828,7 @@ function renderAnalytics() {
 
   renderListingMatrix(books);
   renderPricing(books);
+  renderDrill();
 
   $("revenueNote").textContent = revenue
     ? "Recorded per book in the editor. Gumroad figures can be pulled with `node src/cli.js gumroad-list`; Amazon and Google publish no sales API, so those stay manual."
@@ -1928,6 +1946,196 @@ function renderPricing(books) {
     : "Royalty rates are the planning figures from your ledger: Amazon 70% inside the $2.99–$9.99 " +
       "band and 35% outside it, Gumroad 85%, Google Play 70%. Break-even only appears for books " +
       "this engine produced, since it is measured against their production cost.";
+}
+
+/**
+ * Drill-down.
+ *
+ * Bars and metric tiles are real buttons, so a reader reaches the breakdown by
+ * keyboard as readily as by pointer, and the whole row is the hit target rather
+ * than the painted pixels. Selecting the same row again closes it.
+ *
+ * Book titles are user-entered, so every one is written with textContent rather
+ * than concatenated into markup.
+ */
+function toggleDrill(type, key, label) {
+  var open = ui.drill && ui.drill.type === type && ui.drill.key === key;
+  ui.drill = open ? null : { type: type, key: key, label: label };
+  renderAnalytics();
+
+  if (!open) {
+    var host = $(type === "category" ? "categoryDrill" : type === "store" ? "coverageDrill" : "metricDrill");
+    if (host) host.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+}
+
+/** A table of books, built as DOM so titles never pass through innerHTML. */
+function drillTable(books, columns) {
+  var table = document.createElement("table");
+  table.className = "table";
+
+  var thead = document.createElement("thead");
+  var headRow = document.createElement("tr");
+  columns.forEach(function (col) {
+    var th = document.createElement("th");
+    th.textContent = col.label;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  var tbody = document.createElement("tbody");
+
+  if (!books.length) {
+    var empty = document.createElement("tr");
+    var td = document.createElement("td");
+    td.colSpan = columns.length;
+    td.className = "empty";
+    td.textContent = "Nothing here yet.";
+    empty.appendChild(td);
+    tbody.appendChild(empty);
+  }
+
+  books.forEach(function (book) {
+    var tr = document.createElement("tr");
+    columns.forEach(function (col) {
+      var td = document.createElement("td");
+      var value = col.value(book);
+      if (value instanceof Node) td.appendChild(value);
+      else td.textContent = value == null ? "—" : String(value);
+      if (col.nowrap) td.className = "nowrap";
+      tr.appendChild(td);
+    });
+
+    // The whole row opens the book, so a drill-down ends somewhere useful.
+    tr.style.cursor = "pointer";
+    tr.title = "Open " + book.title;
+    tr.addEventListener("click", function () { viewBook(book.id); });
+    tbody.appendChild(tr);
+  });
+
+  table.appendChild(tbody);
+
+  var wrap = document.createElement("div");
+  wrap.className = "table-wrap";
+  wrap.appendChild(table);
+  return wrap;
+}
+
+function renderDrill() {
+  ["coverageDrill", "categoryDrill", "metricDrill"].forEach(function (id) {
+    var host = $(id);
+    if (host) { host.hidden = true; host.innerHTML = ""; }
+  });
+
+  if (!ui.drill) return;
+
+  var drill = ui.drill;
+  var host = $(drill.type === "category" ? "categoryDrill" : drill.type === "store" ? "coverageDrill" : "metricDrill");
+  if (!host) return;
+
+  var books = drillBooks(drill);
+
+  var head = document.createElement("div");
+  head.className = "drill-head";
+
+  var title = document.createElement("strong");
+  title.textContent = drill.label + " — " + books.length + " title" + (books.length === 1 ? "" : "s");
+  head.appendChild(title);
+
+  var close = document.createElement("button");
+  close.type = "button";
+  close.className = "btn tiny ghost";
+  close.textContent = "Close";
+  close.addEventListener("click", function () { ui.drill = null; renderAnalytics(); });
+  head.appendChild(close);
+
+  host.appendChild(head);
+  host.appendChild(drillTable(books, drillColumns(drill)));
+  host.hidden = false;
+}
+
+function drillBooks(drill) {
+  var books = state.books;
+
+  if (drill.type === "store") {
+    return books.filter(function (b) {
+      return liveStores(b).some(function (s) { return s.id === drill.key; });
+    });
+  }
+
+  if (drill.type === "category") {
+    return books.filter(function (b) { return b.category === drill.key; });
+  }
+
+  if (drill.key === "onsale") return books.filter(isLive);
+  // A listing belongs to a book, so the breakdown is per title, with the
+  // widest-distributed first - that is the shape of the question "where am I
+  // actually on sale?".
+  if (drill.key === "listings") {
+    return books.filter(isLive).sort(function (a, b) {
+      return liveStores(b).length - liveStores(a).length;
+    });
+  }
+  if (drill.key === "gaps") return booksWithGaps().map(function (row) { return row.book; });
+  if (drill.key === "revenue") {
+    return books.filter(function (b) { return Number(b.revenue) > 0; })
+      .sort(function (a, b) { return b.revenue - a.revenue; });
+  }
+  return [];
+}
+
+function drillColumns(drill) {
+  if (drill.type === "store") {
+    var storeId = drill.key;
+    return [
+      { label: "Title", value: function (b) { return b.title; } },
+      { label: "Price here", nowrap: true, value: function (b) { return formatMoney(priceFor(b, storeId)); } },
+      { label: "Royalty", nowrap: true, value: function (b) {
+          return Math.round(netPerSale(storeId, priceFor(b, storeId)).rate * 100) + "%";
+        } },
+      { label: "Net per sale", nowrap: true, value: function (b) {
+          return formatMoney(netPerSale(storeId, priceFor(b, storeId)).net);
+        } },
+      { label: "Revenue", nowrap: true, value: function (b) { return b.revenue ? formatMoney(b.revenue) : "—"; } },
+    ];
+  }
+
+  return [
+    { label: "Title", value: function (b) { return b.title; } },
+    { label: "Category", value: function (b) { return b.category; } },
+    { label: "On sale at", value: function (b) {
+        var stores = liveStores(b);
+        return stores.length ? stores.map(function (s) { return s.label; }).join(", ") : "not on sale";
+      } },
+    { label: "List price", nowrap: true, value: function (b) {
+        return b.listPriceUsd ? formatMoney(b.listPriceUsd) : "—";
+      } },
+  ];
+}
+
+/** Shared by the gaps table and the gaps drill, so they cannot disagree. */
+function booksWithGaps() {
+  var used = STORES.filter(function (store) {
+    return state.books.some(function (b) {
+      return liveStores(b).some(function (s) { return s.id === store.id; });
+    });
+  });
+
+  return state.books
+    .filter(isLive)
+    .map(function (book) {
+      var on = liveStores(book);
+      return {
+        book: book,
+        on: on,
+        missing: used.filter(function (store) {
+          return !on.some(function (s) { return s.id === store.id; });
+        }),
+      };
+    })
+    .filter(function (row) { return row.missing.length; })
+    .sort(function (a, b) { return b.missing.length - a.missing.length; });
 }
 
 function renderSettings() {
@@ -2807,6 +3015,27 @@ var ACTIONS = {
 document.addEventListener("click", function (event) {
   var node = event.target;
   if (!node || typeof node.closest !== "function") return;
+
+  var drill = node.closest("[data-drill]");
+  if (drill) {
+    event.preventDefault();
+    toggleDrill(drill.dataset.drill, drill.dataset.key, drill.dataset.label);
+    return;
+  }
+
+  var jump = node.closest("[data-jump]");
+  if (jump) {
+    event.preventDefault();
+    var target = $(jump.dataset.jump);
+    if (target) {
+      target.scrollIntoView({ block: "start", behavior: "smooth" });
+      // A flash, because a page that silently scrolls leaves you wondering
+      // which of the tables below you were just sent to.
+      target.classList.add("flash");
+      setTimeout(function () { target.classList.remove("flash"); }, 1200);
+    }
+    return;
+  }
 
   var trigger = node.closest("[data-action]");
   if (!trigger) return;

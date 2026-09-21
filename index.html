@@ -392,22 +392,25 @@
 <section id="analytics" class="page" hidden>
 
   <div class="grid" id="analyticsMetrics"></div>
+  <div class="section card" id="metricDrill" hidden></div>
 
   <div class="section grid grid-2">
     <div class="card">
       <h2>Storefront coverage</h2>
-      <p class="muted small">How many titles are on sale at each store. Hover a bar to see which.</p>
+      <p class="muted small">Titles on sale at each store. Select a row to see which.</p>
       <div class="bars" id="coverageBars"></div>
+      <div class="drill" id="coverageDrill" hidden></div>
     </div>
 
     <div class="card">
       <h2>Portfolio by category</h2>
-      <p class="muted small">Titles you have written, by subject.</p>
+      <p class="muted small">Titles you have written, by subject. Select a row to list them.</p>
       <div class="bars" id="categoryBars"></div>
+      <div class="drill" id="categoryDrill" hidden></div>
     </div>
   </div>
 
-  <div class="section card">
+  <div class="section card" id="gapsCard">
     <h2>Distribution gaps</h2>
     <p class="muted small">
       Every title you have already written, and the storefronts it is not yet on.
