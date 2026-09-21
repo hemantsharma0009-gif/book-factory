@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { nextGenre, nextAngle, GENRES } from "../src/genres.js";
 import { markdownToXhtml, buildEpub } from "../src/epub.js";
 import { buildKdpPack } from "../src/publish/kdp.js";
-import { nextRunAt, isDue } from "../src/scheduler.js";
+import { nextRunAt, isDue, shouldRun } from "../src/scheduler.js";
 import { renderFigure } from "../src/illustrate/charts.js";
 import { genericTitleReason } from "../src/agents/title-check.js";
 import { stubPlan } from "../src/agents/planner.js";
@@ -300,3 +300,71 @@ test("a normal-length book is never windowed", () => {
     `default book would be windowed (${manuscript.length} chars)`,
   );
 });
+
+test("scheduler honours midnight instead of silently moving it to 9am", () => {
+  // `hour || 9` is falsy-zero bait; 00:xx must stay 00:xx.
+  for (const [time, expectedHour, expectedMinute] of [
+    ["00:00", 0, 0], ["00:01", 0, 1], ["09:00", 9, 0], ["23:59", 23, 59],
+  ]) {
+    const at = new Date(nextRunAt({ enabled: true, cadence: "daily", time }, null));
+    assert.equal(at.getHours(), expectedHour, `${time} produced hour ${at.getHours()}`);
+    assert.equal(at.getMinutes(), expectedMinute, `${time} produced minute ${at.getMinutes()}`);
+  }
+  // Garbage falls back rather than producing an invalid date.
+  assert.equal(new Date(nextRunAt({ enabled: true, cadence: "daily", time: "nonsense" }, null)).getHours(), 9);
+});
+
+test("cron guard blocks when the approval backlog is full", () => {
+  const state = dueState({ pending: 3, schedule: { maxPending: 3 } });
+  const verdict = shouldRun(state);
+  assert.equal(verdict.run, false);
+  assert.match(verdict.reason, /awaiting approval/);
+});
+
+test("cron guard releases once a book is approved", () => {
+  const state = dueState({ pending: 2, schedule: { maxPending: 3 } });
+  assert.equal(shouldRun(state).run, true, shouldRun(state).reason);
+});
+
+test("cron guard blocks when the 30-day budget is spent", () => {
+  const state = dueState({ pending: 0, schedule: { monthlyBudgetUsd: 5 } });
+  state.runs = [
+    { at: Date.now() - 86400000, cost: { usd: 3 } },
+    { at: Date.now() - 2 * 86400000, cost: { usd: 2.5 } },
+  ];
+  const verdict = shouldRun(state);
+  assert.equal(verdict.run, false);
+  assert.match(verdict.reason, /budget/);
+});
+
+test("cron guard ignores spend older than 30 days", () => {
+  const state = dueState({ pending: 0, schedule: { monthlyBudgetUsd: 5 } });
+  state.runs = [{ at: Date.now() - 40 * 86400000, cost: { usd: 99 } }];
+  assert.equal(shouldRun(state).run, true, "stale spend should not block a run");
+});
+
+test("cron guard blocks when the schedule is disabled", () => {
+  const state = dueState({ pending: 0, schedule: { enabled: false } });
+  assert.equal(shouldRun(state).run, false);
+  assert.match(shouldRun(state).reason, /disabled/);
+});
+
+/** A state whose schedule is due right now, with `pending` unapproved books. */
+function dueState({ pending, schedule }) {
+  return {
+    schedule: {
+      enabled: true,
+      cadence: "daily",
+      time: "00:00",
+      maxPending: 3,
+      monthlyBudgetUsd: 20,
+      ...schedule,
+    },
+    // No prior run means "due as soon as the time passes"; a run two days ago
+    // makes a daily cadence overdue.
+    runs: [{ at: Date.now() - 2 * 86400000, cost: { usd: 0 } }],
+    books: Array.from({ length: pending }, (_, i) => ({
+      id: `b${i}`, status: "awaiting_approval",
+    })),
+  };
+}
