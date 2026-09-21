@@ -5,6 +5,8 @@ import { markdownToXhtml, buildEpub } from "../src/epub.js";
 import { buildKdpPack } from "../src/publish/kdp.js";
 import { nextRunAt, isDue } from "../src/scheduler.js";
 import { renderFigure } from "../src/illustrate/charts.js";
+import { genericTitleReason } from "../src/agents/title-check.js";
+import { stubPlan } from "../src/agents/planner.js";
 
 test("genre rotation never repeats within the cooldown window", () => {
   const history = [];
@@ -72,11 +74,32 @@ test("kdp pack flags a price outside the 70% royalty band", () => {
   assert.match(pack.markdown, /35% royalty/);
 });
 
-test("kdp pack flags keywords that repeat title words", () => {
+test("kdp pack flags keywords that repeat title words, naming the field", () => {
   const book = baseBook({ keywords: ["cooking guide", "a", "b", "c", "d", "e", "f"] });
   book.title = "The Cooking Handbook";
+  book.subtitle = "Recipes";
   const pack = buildKdpPack({ book, epubName: "x.epub" });
-  assert.ok(pack.warnings.some((w) => w.includes("repeats a word from the title")));
+  assert.ok(pack.warnings.some((w) => /repeats "cooking" from the title/.test(w)));
+});
+
+test("kdp pack attributes a subtitle collision to the subtitle, not the title", () => {
+  // Naming the wrong field sends you hunting in the wrong place.
+  const book = baseBook({ keywords: ["practical techniques", "a", "b", "c", "d", "e", "f"] });
+  book.title = "Nine Days Above the Treeline";
+  book.subtitle = "A practical guide to expedition survival";
+  const pack = buildKdpPack({ book, epubName: "x.epub" });
+  const warning = pack.warnings.find((w) => w.includes("practical techniques"));
+  assert.ok(warning, "expected a warning for the colliding keyword");
+  assert.match(warning, /from the subtitle/);
+});
+
+test("kdp pack does not warn on genuinely distinct keywords", () => {
+  const book = baseBook({ keywords: ["self study workbook", "learn at home", "worked examples",
+    "quick reference", "weekend project", "field tested methods", "no prior experience"] });
+  book.title = "Nine Days Above the Treeline";
+  book.subtitle = "Crossing the Sierra on foot";
+  const pack = buildKdpPack({ book, epubName: "x.epub" });
+  assert.deepEqual(pack.warnings, [], `unexpected warnings: ${pack.warnings.join("; ")}`);
 });
 
 test("kdp pack always carries the AI disclosure", () => {
@@ -127,5 +150,89 @@ function baseBook(overrides) {
       priceUsd: overrides.priceUsd || 9.99,
       priceRationale: "because",
     },
+  };
+}
+
+test("generic-title guard rejects titles that name their own genre", () => {
+  const genre = { name: "Mystery", id: "mystery", kind: "fiction" };
+  assert.match(genericTitleReason("The Mystery Handbook", genre), /genre name/);
+  assert.match(genericTitleReason("A Mystery Guide", genre), /genre name/);
+  assert.match(genericTitleReason("Narrative History For Beginners", { name: "Narrative history" }), /genre name/);
+});
+
+test("generic-title guard rejects stock formulas", () => {
+  const genre = { name: "Cooking", id: "cooking", kind: "nonfiction" };
+  assert.ok(genericTitleReason("The Complete Guide to Bread", genre));
+  assert.ok(genericTitleReason("Mastering Sourdough", genre));
+  assert.ok(genericTitleReason("Sourdough 101", genre));
+  assert.ok(genericTitleReason("The Fermentation Bible", genre));
+  assert.ok(genericTitleReason("Everything You Need To Know About Yeast", genre));
+});
+
+test("generic-title guard accepts real, specific titles", () => {
+  // These are the shapes we want; none may be flagged.
+  const cases = [
+    ["Salt Fat Acid Heat", { name: "Cooking" }],
+    ["The Devil in the White City", { name: "Narrative history" }],
+    ["Bowling Alone", { name: "Popular science" }],
+    ["Nine Days Above the Treeline", { name: "Adventure" }],
+    ["The Room That Locked Itself", { name: "Mystery" }],
+    ["Six Weeks in October", { name: "Narrative history" }],
+    ["One Pan, One Fire", { name: "Cooking" }],
+  ];
+  for (const [title, genre] of cases) {
+    assert.equal(genericTitleReason(title, genre), null, `false positive on "${title}"`);
+  }
+});
+
+test("generic-title guard rejects empty and filler-only titles", () => {
+  const genre = { name: "Business" };
+  assert.ok(genericTitleReason("", genre));
+  assert.ok(genericTitleReason("   ", genre));
+  assert.ok(genericTitleReason("The Complete Book", genre));
+});
+
+test("stub plans produce distinctive titles for every genre", () => {
+  // A dry run must exercise the same paths as a real one, so its titles must
+  // pass the same guard.
+  for (const genre of GENRES) {
+    const plan = stubPlan({ genre, angle: "a test angle", chapters: 3 });
+    assert.equal(
+      genericTitleReason(plan.title, genre),
+      null,
+      `stub title "${plan.title}" for ${genre.id} would be rejected`,
+    );
+  }
+});
+
+test("stub keywords never repeat title words", () => {
+  for (const genre of GENRES.slice(0, 4)) {
+    const plan = stubPlan({ genre, angle: "one pan meals", chapters: 3 });
+    const listing = stubListingFor(plan, genre);
+    const titleWords = plan.title.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
+    for (const keyword of listing.keywords) {
+      for (const word of keyword.toLowerCase().split(/\W+/)) {
+        assert.ok(
+          !(word.length > 3 && titleWords.includes(word)),
+          `keyword "${keyword}" repeats title word "${word}" from "${plan.title}"`,
+        );
+      }
+    }
+  }
+});
+
+/** Mirrors the marketer stub's keyword derivation for the test above. */
+function stubListingFor(plan, genre) {
+  const angleWords = "one pan meals".toLowerCase().split(/\s+/).slice(0, 3).join(" ");
+  return {
+    keywords: [
+      `${angleWords} for beginners`,
+      `how to start ${angleWords}`,
+      `${angleWords} step by step`,
+      `${genre.kind === "fiction" ? "novel" : "workbook"} for self study`,
+      "illustrated reference",
+      "practical techniques",
+      "learn at home",
+    ],
   };
 }

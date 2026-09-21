@@ -23,11 +23,27 @@ export function buildKdpPack({ book, epubName }) {
   if (listing.keywords.length !== LIMITS.keywords) {
     warnings.push(`KDP has exactly ${LIMITS.keywords} keyword slots; listing has ${listing.keywords.length}.`);
   }
+  // KDP indexes the title AND the subtitle, so a keyword echoing either buys
+  // nothing and burns one of only seven slots. Name the field that collided -
+  // "repeats the title" when the word is actually in the subtitle sends you
+  // hunting in the wrong place.
+  const wordsIn = (text) =>
+    new Set(String(text).toLowerCase().split(/\W+/).filter((w) => w.length > 3));
+  const titleWords = wordsIn(book.title);
+  const subtitleWords = wordsIn(book.subtitle);
+
   listing.keywords.forEach((keyword) => {
     if (keyword.length > LIMITS.keywordChars) warnings.push(`Keyword too long: "${keyword}"`);
-    const titleWords = `${book.title} ${book.subtitle}`.toLowerCase().split(/\W+/);
-    if (keyword.toLowerCase().split(/\W+/).some((w) => w.length > 3 && titleWords.includes(w))) {
-      warnings.push(`Keyword "${keyword}" repeats a word from the title — KDP indexes the title already.`);
+
+    for (const word of new Set(keyword.toLowerCase().split(/\W+/))) {
+      if (word.length <= 3) continue;
+      const field = titleWords.has(word) ? "title" : subtitleWords.has(word) ? "subtitle" : null;
+      if (field) {
+        warnings.push(
+          `Keyword "${keyword}" repeats "${word}" from the ${field} — KDP already indexes the ${field}.`,
+        );
+        break;
+      }
     }
   });
 

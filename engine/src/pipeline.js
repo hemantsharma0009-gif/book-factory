@@ -75,7 +75,7 @@ export async function produceBook({
   log(`  ${figures.size} figure(s)`);
 
   log("Writing listing…");
-  const listing = await writeListing({ plan, genre, wordCount });
+  const listing = await writeListing({ plan, genre, wordCount, angle });
 
   const coverSvg = renderCover({
     title: plan.title,
