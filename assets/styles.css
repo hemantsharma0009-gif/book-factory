@@ -592,6 +592,55 @@ textarea.input {
 .chart .bar-label { font-size: 10px; color: var(--muted); }
 
 .bars { display: flex; flex-direction: column; gap: 10px; }
+
+/* A drillable row is a real button: keyboard focus gets what hover gets, and
+   the hit target covers the whole row rather than only the painted bar. */
+button.bars-row {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  border-radius: 8px;
+  text-align: left;
+  font-family: inherit;
+  /* `font: inherit` would outrank the 12px on .bars-row below - it is the more
+     specific selector - and blow the row up to body size. Set the size here. */
+  font-size: 12px;
+  color: inherit;
+}
+
+button.bars-row:hover,
+button.bars-row:focus-visible { background: var(--panel-2); }
+button.bars-row:hover .bars-fill,
+button.bars-row:focus-visible .bars-fill { filter: brightness(1.18); }
+button.bars-row[aria-pressed="true"] { background: var(--panel-3); }
+button.bars-row[aria-pressed="true"] .bars-fill { background: var(--violet); }
+
+.flash { animation: flash 1.2s ease; }
+@keyframes flash {
+  0%, 100% { box-shadow: none; }
+  15% { box-shadow: 0 0 0 2px var(--blue); }
+  70% { box-shadow: 0 0 0 2px var(--blue); }
+}
+
+.drill {
+  margin-top: 14px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 12px;
+}
+
+.drill-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.card.clickable { cursor: pointer; text-align: left; transition: border-color .15s ease, transform .12s ease; }
+.card.clickable:hover,
+.card.clickable:focus-visible { border-color: var(--blue); transform: translateY(-1px); }
 .bars-row { display: grid; grid-template-columns: 150px 1fr 40px; gap: 10px; align-items: center; font-size: 12px; }
 .bars-track { display: block; height: 8px; background: var(--track); border-radius: 999px; overflow: hidden; }
 .bars-fill { display: block; height: 100%; border-radius: 999px; background: var(--blue); }
