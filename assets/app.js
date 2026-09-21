@@ -10,7 +10,7 @@
    --------------------------------------------------------- */
 
 var APP_VERSION = "2.0";
-var SCHEMA_VERSION = 2;
+var SCHEMA_VERSION = 3;
 var STORE_KEY = "bookFactory.state.v2";
 var LEGACY_KEY = "bookFactoryBooks";
 var THEME_KEY = "bookFactory.theme";
@@ -398,10 +398,57 @@ function isLive(book) {
   return liveStores(book).length > 0;
 }
 
+/**
+ * Was this stored library left exactly as the old demo seed shipped it?
+ *
+ * The pre-v3 seed carried the right book titles with invented production
+ * stages, so anyone who never edited anything is looking at a library that
+ * claims their published books are half-written. Those people should get the
+ * real catalogue without having to know that a Reset button exists - but
+ * anyone who HAS edited their library must keep what they did.
+ *
+ * The test is deliberately strict: every book must still carry a seed id, and
+ * none may show any sign of having been touched.
+ */
+function isUntouchedLegacyDemo(raw) {
+  var books = Array.isArray(raw.books) ? raw.books : [];
+  if (!books.length) return false;
+
+  return books.every(function (book) {
+    if (!book || typeof book !== "object") return false;
+    var isSeedId = String(book.id || "").indexOf("bk_seed_") === 0;
+    var untouched =
+      !book.released &&
+      !(book.liveOn && book.liveOn.length) &&
+      !(book.storefronts &&
+        Object.keys(book.storefronts).some(function (k) { return book.storefronts[k]; })) &&
+      !(book.issues && book.issues.length) &&
+      !Number(book.revenue);
+
+    return isSeedId && untouched;
+  });
+}
+
 function normaliseState(raw) {
   if (!raw || typeof raw !== "object") return null;
 
   var base = seedState();
+
+  // Replace an untouched pre-v3 demo library with the real catalogue. Anything
+  // the user actually changed is preserved and merely normalised.
+  if (toInt(raw.schema, 1) < 3 && isUntouchedLegacyDemo(raw)) {
+    console.info("Book Factory: replacing the untouched demo library with the real catalogue.");
+    return Object.assign(base, {
+      activity: [{
+        id: uid("ac"),
+        at: Date.now(),
+        kind: "system",
+        message: "Library updated to your real catalogue — published titles now show as on sale.",
+      }],
+      settings: Object.assign(base.settings, raw.settings || {}),
+    });
+  }
+
   var books = Array.isArray(raw.books) ? raw.books.map(normaliseBook) : base.books;
 
   var ids = Object.create(null);
