@@ -75,7 +75,22 @@ test("kdp pack flags a price outside the 70% royalty band", () => {
   const book = baseBook({ priceUsd: 14.99 });
   const pack = buildKdpPack({ book, epubName: "x.epub" });
   assert.equal(pack.royalty, "35%");
-  assert.match(pack.markdown, /35% royalty/);
+  // The sheet must state the cost of the band, not merely the rate.
+  assert.match(pack.markdown, /outside Amazon's \$2\.99–\$9\.99 band/);
+  assert.match(pack.markdown, /\$5\.25 per sale/);   // 14.99 x 0.35
+  assert.match(pack.markdown, /\$6\.99 at \$9\.99/); //  9.99 x 0.70
+});
+
+test("kdp pack quotes the Amazon price, not a generic list price", () => {
+  // A title can be $12.99 on Gumroad and $9.99 on Amazon; the sheet is for
+  // Amazon, so it must use the Amazon figure and the royalty that follows.
+  const book = baseBook({ priceUsd: 12.99 });
+  book.prices = { amazon: 9.99 };
+  const pack = buildKdpPack({ book, epubName: "x.epub" });
+  assert.equal(pack.royalty, "70%");
+  assert.match(pack.markdown, /\| \*\*\$9\.99\*\* \|/);
+  assert.match(pack.markdown, /70% — \$6\.99 per sale/);
+  assert.doesNotMatch(pack.markdown, /outside Amazon's/);
 });
 
 test("kdp pack flags keywords that repeat title words, naming the field", () => {
