@@ -9,12 +9,12 @@ import { paths } from "./config.js";
 const EMPTY = { version: 1, books: [], genreHistory: [], schedule: null, runs: [] };
 
 export async function ensureDirs() {
-  await fs.mkdir(paths.books, { recursive: true });
+  await fs.mkdir(paths().books, { recursive: true });
 }
 
 export async function load() {
   try {
-    const raw = await fs.readFile(paths.manifest, "utf8");
+    const raw = await fs.readFile(paths().manifest, "utf8");
     const parsed = JSON.parse(raw);
     return { ...EMPTY, ...parsed };
   } catch (err) {
@@ -25,9 +25,9 @@ export async function load() {
 
 export async function save(state) {
   await ensureDirs();
-  const tmp = `${paths.manifest}.tmp`;
+  const tmp = `${paths().manifest}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(state, null, 2));
-  await fs.rename(tmp, paths.manifest); // atomic: never leave a half-written manifest
+  await fs.rename(tmp, paths().manifest); // atomic: never leave a half-written manifest
 }
 
 export async function update(mutator) {
@@ -38,7 +38,7 @@ export async function update(mutator) {
 }
 
 export function bookDir(id) {
-  return path.join(paths.books, id);
+  return path.join(paths().books, id);
 }
 
 export async function writeArtifact(id, name, contents) {

@@ -35,6 +35,13 @@ export async function produceBook({
   wordsPerChapter = DEFAULTS.wordsPerChapter,
   images = "charts",
   author = "Book Factory Studio",
+  /**
+   * Sample mode: plan the whole book but write only the first few chapters.
+   * The point is to judge PROSE for about a tenth of the cost, before
+   * committing to a full run - so the chapters it does write go through the
+   * same drafting and editing the real thing would.
+   */
+  sample = 0,
   log = () => {},
 } = {}) {
   const state = await store.load();
@@ -47,9 +54,19 @@ export async function produceBook({
   log(`Genre: ${genre.name} — ${angle}`);
 
   log("Planning…");
-  const plan = await planBook({ genre, angle, chapters, wordsPerChapter });
-  log(`Planned "${plan.title}" (${plan.chapters.length} chapters)`);
-  await store.writeArtifact(id, "plan.json", JSON.stringify(plan, null, 2));
+  const fullPlan = await planBook({ genre, angle, chapters, wordsPerChapter });
+  log(`Planned "${fullPlan.title}" (${fullPlan.chapters.length} chapters)`);
+  await store.writeArtifact(id, "plan.json", JSON.stringify(fullPlan, null, 2));
+
+  // The bible still describes the whole book, so sampled chapters are written
+  // with the same context the full run would give them.
+  const plan = sample
+    ? { ...fullPlan, chapters: fullPlan.chapters.slice(0, sample) }
+    : fullPlan;
+
+  if (sample) {
+    log(`Sample: writing ${plan.chapters.length} of ${fullPlan.chapters.length} chapters`);
+  }
 
   log("Drafting chapters (batch)…");
   let written = await draftChapters({
@@ -114,6 +131,7 @@ export async function produceBook({
   const book = {
     id,
     uuid,
+    sample: sample ? { chapters: plan.chapters.length, of: fullPlan.chapters.length } : null,
     title: plan.title,
     subtitle: plan.subtitle,
     author,
@@ -137,13 +155,24 @@ export async function produceBook({
 
   await store.update(async (s) => {
     s.books.unshift(book);
-    s.genreHistory.unshift({ genre: genre.id, angle, at: Date.now(), bookId: id });
-    s.genreHistory = s.genreHistory.slice(0, 50);
-    s.runs.unshift({ at: Date.now(), bookId: id, cost, model: MODEL });
+    // A sample does not consume a genre slot - you will want to write this
+    // book properly afterwards, in this same genre.
+    if (!sample) {
+      s.genreHistory.unshift({ genre: genre.id, angle, at: Date.now(), bookId: id });
+      s.genreHistory = s.genreHistory.slice(0, 50);
+    }
+    s.runs.unshift({ at: Date.now(), bookId: id, cost, model: MODEL, sample: Boolean(sample) });
     s.runs = s.runs.slice(0, 100);
   });
 
-  log(`Done. ${book.title} — awaiting your approval. Estimated cost $${cost.usd.toFixed(2)}`);
+  if (sample) {
+    log(
+      `Sample done. "${book.title}" — ${plan.chapters.length} chapters, ` +
+        `$${cost.usd.toFixed(2)}. Read it, then run the full book if the prose holds up.`,
+    );
+  } else {
+    log(`Done. ${book.title} — awaiting your approval. Estimated cost $${cost.usd.toFixed(2)}`);
+  }
   return book;
 }
 

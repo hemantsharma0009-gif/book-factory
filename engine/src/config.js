@@ -20,17 +20,27 @@ export const PRICING = {
 
 export const BATCH_DISCOUNT = 0.5;
 
-/** Where generated books, manifests and packs are written. */
-export const DATA_DIR = process.env.BOOK_FACTORY_DATA
-  ? path.resolve(process.env.BOOK_FACTORY_DATA)
-  : path.resolve(process.cwd(), "library");
+/**
+ * Where generated books, manifests and packs are written.
+ *
+ * Resolved on each call rather than frozen at import, so BOOK_FACTORY_DATA can
+ * be set by a caller (or a test) after this module is loaded.
+ */
+export function dataDir() {
+  return process.env.BOOK_FACTORY_DATA
+    ? path.resolve(process.env.BOOK_FACTORY_DATA)
+    : path.resolve(process.cwd(), "library");
+}
 
-export const paths = {
-  data: DATA_DIR,
-  manifest: path.join(DATA_DIR, "library.json"),
-  books: path.join(DATA_DIR, "books"),
-  tmp: path.join(os.tmpdir(), "book-factory"),
-};
+export function paths() {
+  const data = dataDir();
+  return {
+    data,
+    manifest: path.join(data, "library.json"),
+    books: path.join(data, "books"),
+    tmp: path.join(os.tmpdir(), "book-factory"),
+  };
+}
 
 /** Book shape defaults. Overridable per blueprint. */
 export const DEFAULTS = {

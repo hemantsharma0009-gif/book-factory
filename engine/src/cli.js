@@ -3,6 +3,8 @@
  * Command line entry point.
  *
  *   generate [--genre id] [--chapters n] [--words n] [--images charts|none] [--dry-run]
+           [--sample n]          write only the first n chapters (default 2) to
+                                 judge the prose cheaply before a full run
  *   status
  *   show <bookId>
  *   approve <bookId>
@@ -31,18 +33,27 @@ function flag(name, fallback = undefined) {
   return next && !next.startsWith("--") ? next : true;
 }
 
+// Piping to `head`, `less` or `grep -q` closes stdout early; without this the
+// CLI dies with an unhandled EPIPE and a stack trace instead of exiting quietly.
+process.stdout.on("error", (err) => {
+  if (err.code === "EPIPE") process.exit(0);
+  throw err;
+});
+
 const log = (line) => process.stdout.write(`${line}\n`);
 
 async function main() {
   switch (command) {
     case "generate": {
       if (flag("dry-run")) process.env.BOOK_FACTORY_DRY_RUN = "1";
+      const sampleFlag = flag("sample", false);
       const book = await produceBook({
         genreId: flag("genre", null) || null,
         chapters: Number(flag("chapters", 12)),
         wordsPerChapter: Number(flag("words", 2200)),
         images: String(flag("images", "charts")),
         author: String(flag("author", "Book Factory Studio")),
+        sample: sampleFlag ? Number(sampleFlag === true ? 2 : sampleFlag) : 0,
         log,
       });
       await writePack(book.id);
@@ -57,7 +68,7 @@ async function main() {
       log(`${state.books.length} book(s)\n`);
       for (const b of state.books) {
         log(
-          `  ${b.id}  ${b.status.padEnd(18)} ${b.title}\n` +
+          `  ${b.id}  ${b.status.padEnd(18)} ${b.title}${b.sample ? ` [SAMPLE ${b.sample.chapters}/${b.sample.of}]` : ""}\n` +
             `             ${b.genreName} · ${b.wordCount.toLocaleString()} words · $${b.cost.usd.toFixed(2)}` +
             `${b.published.gumroad ? ` · gumroad: ${b.published.gumroad.url}` : ""}`,
         );
@@ -191,6 +202,8 @@ async function main() {
       log(`book-factory engine
 
   generate [--genre id] [--chapters n] [--words n] [--images charts|none] [--dry-run]
+           [--sample n]          write only the first n chapters (default 2) to
+                                 judge the prose cheaply before a full run
   status | show <id> | genres
   approve <id> | reject <id> [reason]
   pack <id>                       write the KDP upload sheet

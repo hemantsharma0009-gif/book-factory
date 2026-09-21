@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { nextGenre, nextAngle, GENRES } from "../src/genres.js";
 import { markdownToXhtml, buildEpub } from "../src/epub.js";
 import { buildKdpPack } from "../src/publish/kdp.js";
@@ -368,3 +371,23 @@ function dueState({ pending, schedule }) {
     })),
   };
 }
+test("sample mode writes fewer chapters but plans the whole book", async () => {
+  process.env.BOOK_FACTORY_DRY_RUN = "1";
+  process.env.BOOK_FACTORY_DATA = await fs.mkdtemp(path.join(os.tmpdir(), "bf-sample-"));
+
+  const { produceBook } = await import(`../src/pipeline.js?sample=${Date.now()}`);
+  const book = await produceBook({ genreId: "cooking", chapters: 10, sample: 2 });
+
+  assert.equal(book.chapterCount, 2, "sample wrote the wrong number of chapters");
+  assert.deepEqual(book.sample, { chapters: 2, of: 10 }, "sample metadata is wrong");
+
+  // The plan on disk must still describe the whole book, so the full run later
+  // writes the same book rather than a different one.
+  const plan = JSON.parse(
+    await fs.readFile(path.join(process.env.BOOK_FACTORY_DATA, "books", book.id, "plan.json"), "utf8"),
+  );
+  assert.equal(plan.chapters.length, 10, "sample truncated the stored plan");
+
+  delete process.env.BOOK_FACTORY_DRY_RUN;
+  delete process.env.BOOK_FACTORY_DATA;
+});
