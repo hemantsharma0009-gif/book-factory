@@ -47,7 +47,12 @@ export function buildKdpPack({ book, epubName }) {
     }
   });
 
-  const royalty = listing.priceUsd >= 2.99 && listing.priceUsd <= 9.99 ? "70%" : "35%";
+  // Amazon pays 70% only inside this band; outside it the rate halves, so a
+  // higher price can earn less per sale. Quote the Amazon price specifically.
+  const amazonPrice = book.prices?.amazon || listing.priceUsd;
+  const royalty = amazonPrice >= 2.99 && amazonPrice <= 9.99 ? "70%" : "35%";
+  const netPerSale = amazonPrice * (royalty === "70%" ? 0.7 : 0.35);
+  const bandTopNet = 9.99 * 0.7;
 
   const markdown = `# KDP upload sheet — ${book.title}
 
@@ -104,13 +109,22 @@ ${listing.categories.map((c) => `- ${c}`).join("\n")}
 |---|---|
 | KDP Select enrolment | Your call — 90-day Amazon exclusivity in exchange for Kindle Unlimited page reads. **Do not enrol if you are also selling this on Gumroad.** |
 | Primary marketplace | Amazon.com |
-| List price (USD) | **$${listing.priceUsd.toFixed(2)}** |
-| Royalty plan | ${royalty} |
+| List price (USD) | **$${amazonPrice.toFixed(2)}** |
+| Royalty plan | ${royalty} — $${netPerSale.toFixed(2)} per sale |
 | Book Lending | Enabled |
 
 Pricing rationale: ${listing.priceRationale}
 
-${royalty === "35%" ? "> ⚠ This price falls outside the $2.99–$9.99 band, so it earns the 35% royalty rather than 70%.\n" : ""}
+${royalty === "35%"
+  ? `> ⚠ **$${amazonPrice.toFixed(2)} is outside Amazon's $2.99–$9.99 band**, so it earns 35% rather than 70%:
+` +
+    `> $${netPerSale.toFixed(2)} per sale, against $${bandTopNet.toFixed(2)} at $9.99. You would have to charge
+` +
+    `> about $${(bandTopNet / 0.35).toFixed(2)} just to match the band top. Consider listing at $9.99 on Amazon
+` +
+    `> and keeping the higher price on stores without a band.
+`
+  : ""}
 ## Cover note
 
 The generated cover is \`cover.svg\`. KDP requires a raster image — JPEG or TIFF,

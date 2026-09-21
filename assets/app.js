@@ -18,7 +18,7 @@ var SCHEMA_VERSION = 4;
  * strict "untouched demo" test used before was too conservative, and stranded
  * libraries showing published books as work in progress.
  */
-var CATALOGUE_VERSION = "ledger-2026-09";
+var CATALOGUE_VERSION = "ledger-2026-09-pricing";
 var STORE_KEY = "bookFactory.state.v2";
 var LEGACY_KEY = "bookFactoryBooks";
 var THEME_KEY = "bookFactory.theme";
@@ -172,7 +172,11 @@ function seedBooks() {
       issues: [],
       createdAt: now - (11 - i) * 86400000,
       updatedAt: now - (11 - i) * 3600000,
-      listPriceUsd: r[5]
+      listPriceUsd: r[5],
+      // Amazon is capped at the top of its 70% royalty band. Above $9.99 the
+      // rate halves, so a higher Amazon price earns less per sale until it is
+      // roughly doubled - see priceAdvice(). Other stores keep the list price.
+      prices: { amazon: Math.min(r[5], ROYALTY.amazon.bandHigh) }
     };
   });
 }
@@ -422,6 +426,7 @@ function normaliseBook(raw, index) {
     // Carried explicitly: this function rebuilds a book from a fixed field
     // list, so anything omitted here is silently dropped on every load.
     listPriceUsd: Math.max(0, toNum(book.listPriceUsd, 0)) || null,
+    prices: normalisePrices(book.prices),
     productionCostUsd: Math.max(0, toNum(book.productionCostUsd, 0)) || null,
     generated: book.generated === true,
     issues: Array.isArray(book.issues) ? book.issues.filter(Boolean).map(function (issue) {
@@ -450,6 +455,20 @@ var ROYALTY = {
   play: { rate: 0.70, lowRate: 0.70, bandLow: 0, bandHigh: Infinity, label: "Google Play Books" },
   other: { rate: 0.80, lowRate: 0.80, bandLow: 0, bandHigh: Infinity, label: "Other store" }
 };
+
+/**
+ * The price a title is listed at on one storefront.
+ *
+ * A single price per book cannot express the thing that matters here: $12.99
+ * is right on Gumroad, which takes a flat cut, and wrong on Amazon, where it
+ * falls outside the 70% band. Per-store prices fall back to the book's list
+ * price when nothing store-specific is set.
+ */
+function priceFor(book, storeId) {
+  var prices = book.prices || {};
+  var specific = Number(prices[storeId]) || 0;
+  return specific || Number(book.listPriceUsd) || 0;
+}
 
 /** What one sale nets at `price` on `storeId`, and whether the band bites. */
 function netPerSale(storeId, price) {
@@ -487,6 +506,16 @@ var STORES = [
   { id: "play", label: "Google Play Books" },
   { id: "other", label: "Other store" },
 ];
+
+function normalisePrices(raw) {
+  var source = raw && typeof raw === "object" ? raw : {};
+  var out = {};
+  STORES.forEach(function (store) {
+    var value = Math.max(0, toNum(source[store.id], 0));
+    if (value) out[store.id] = value;
+  });
+  return out;
+}
 
 function normaliseStorefronts(raw) {
   var source = raw && typeof raw === "object" ? raw : {};
@@ -576,6 +605,9 @@ function mergeCatalogue(books) {
       series: existing.series || fresh.series,
       category: existing.category || fresh.category,
       listPriceUsd: existing.listPriceUsd || fresh.listPriceUsd,
+      // Per-store prices the user set win; otherwise take the catalogue's,
+      // which caps Amazon at the top of its 70% band.
+      prices: Object.assign({}, fresh.prices, existing.prices || {}),
       // The catalogue is the authority on where a book is on sale, unless the
       // user has said otherwise themselves.
       liveOn: userSetLive ? existing.liveOn : fresh.liveOn,
@@ -1764,7 +1796,10 @@ function renderAnalytics() {
           "<td>" + escapeHTML(row.book.title) + "</td>" +
           "<td>" + row.on.map(function (s) { return pill(s.label, "ok"); }).join(" ") + "</td>" +
           "<td>" + row.missing.map(function (s) { return pill(s.label, "warn"); }).join(" ") + "</td>" +
-          '<td class="nowrap">' + (row.book.listPriceUsd ? formatMoney(row.book.listPriceUsd) : "—") + "</td>" +
+          '<td class="nowrap">' + (row.book.listPriceUsd ? formatMoney(row.book.listPriceUsd) : "—") +
+            (row.book.prices && row.book.prices.amazon && row.book.prices.amazon !== row.book.listPriceUsd
+              ? '<br><span class="small muted">' + formatMoney(row.book.prices.amazon) + " on Amazon</span>"
+              : "") + "</td>" +
           "</tr>";
       }).join("")
     : emptyRow(
@@ -1847,13 +1882,13 @@ function renderPricing(books) {
   var penalised = 0;
 
   books.forEach(function (book) {
-    var price = Number(book.listPriceUsd) || 0;
-    if (!price) return;
-
     var stores = liveStores(book);
     if (!stores.length) return;
 
     stores.forEach(function (store) {
+      var price = priceFor(book, store.id);
+      if (!price) return;
+
       var advice = priceAdvice(store.id, price);
       var cost = Number(book.productionCostUsd) || (book.generated ? ENGINE_COST : 0);
       var breakEven = advice.current.net > 0 && cost
@@ -2064,7 +2099,9 @@ function editBook(id) {
     words: { done: 0, target: 45000 },
     priority: "normal",
     revenue: 0,
+    listPriceUsd: 9.99,
     storefronts: normaliseStorefronts({}),
+    prices: {},
     liveOn: [],
   };
 
@@ -2104,6 +2141,7 @@ function editBook(id) {
       "</div>" +
 
       '<div class="field-row">' +
+        '<label class="field"><span>List price ($)</span><input class="input" name="listPrice" type="number" min="0" step="0.01" value="' + (draft.listPriceUsd || "") + '"></label>' +
         '<label class="field"><span>Recorded revenue ($)</span><input class="input" name="revenue" type="number" min="0" step="1" value="' + draft.revenue + '"></label>' +
       "</div>" +
 
@@ -2113,13 +2151,23 @@ function editBook(id) {
         STORES.map(function (store) {
           var onSale = (draft.liveOn || []).indexOf(store.id) >= 0 ||
             Boolean(draft.storefronts && draft.storefronts[store.id]);
-          return '<div style="margin-bottom:10px">' +
+          var storePrice = (draft.prices || {})[store.id] || "";
+          var r = ROYALTY[store.id];
+          var hint = r && r.bandHigh !== Infinity
+            ? "70% up to " + formatMoney(r.bandHigh) + ", 35% above"
+            : Math.round((r ? r.rate : 0.8) * 100) + "% royalty";
+
+          return '<div style="margin-bottom:12px">' +
             '<label class="switch"><input type="checkbox" name="live_' + store.id + '"' +
-              (onSale ? " checked" : "") + "> <span>On sale at " + escapeHTML(store.label) + "</span></label>" +
-            '<input class="input" name="store_' + store.id + '" type="url" style="width:100%" ' +
-              'placeholder="Listing link (optional)" value="' +
-              escapeHTML((draft.storefronts && draft.storefronts[store.id]) || "") + '">' +
-            "</div>";
+              (onSale ? " checked" : "") + "> <span>On sale at " + escapeHTML(store.label) +
+              ' <span class="small muted">— ' + escapeHTML(hint) + "</span></span></label>" +
+            '<div style="display:flex;gap:8px">' +
+              '<input class="input" name="price_' + store.id + '" type="number" min="0" step="0.01" ' +
+                'style="width:120px" placeholder="price" value="' + storePrice + '">' +
+              '<input class="input" name="store_' + store.id + '" type="url" style="flex:1" ' +
+                'placeholder="Listing link (optional)" value="' +
+                escapeHTML((draft.storefronts && draft.storefronts[store.id]) || "") + '">' +
+            "</div></div>";
         }).join("") +
       "</fieldset>" +
 
@@ -2185,13 +2233,18 @@ function submitBookForm(book, form) {
   target_book.chapters = { total: total, done: done };
   target_book.words = { done: drafted, target: target };
   target_book.revenue = Math.max(0, toNum(data.get("revenue"), 0));
+  target_book.listPriceUsd = Math.max(0, toNum(data.get("listPrice"), 0)) || null;
 
   var storefronts = {};
   var liveOn = [];
+  var prices = {};
   STORES.forEach(function (store) {
     storefronts[store.id] = String(data.get("store_" + store.id) || "").trim();
     if (data.get("live_" + store.id)) liveOn.push(store.id);
+    var storePrice = Math.max(0, toNum(data.get("price_" + store.id), 0));
+    if (storePrice) prices[store.id] = storePrice;
   });
+  target_book.prices = normalisePrices(prices);
   var wasLive = isLive(target_book);
   target_book.storefronts = normaliseStorefronts(storefronts);
   target_book.liveOn = liveOn;
