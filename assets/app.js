@@ -38,43 +38,40 @@ var ZONES = [
   { id: "AET", label: "Sydney (UTC+10:00)", offset: 600 }
 ];
 
+/**
+ * Blueprints, one per genre the engine can produce.
+ *
+ * This list mirrors engine/src/genres.js deliberately: the dashboard offering
+ * four options while the engine rotated through twelve meant most of the
+ * catalogue was unreachable from the UI.
+ */
 var BLUEPRINTS = [
-  {
-    id: "fiction",
-    name: "Fiction",
-    blurb: "Characters · plot beats · chapters · dialogue passes · QA",
-    category: "Mythology",
-    chapters: 24,
-    words: 78000,
-    format: "EPUB / PDF"
-  },
-  {
-    id: "nonfiction",
-    name: "Non-fiction",
-    blurb: "Research · structured chapters · references · line editing",
-    category: "Education",
-    chapters: 14,
-    words: 55000,
-    format: "EPUB / PDF"
-  },
-  {
-    id: "workbook",
-    name: "Workbook",
-    blurb: "Exercises · answer keys · difficulty progression · QA",
-    category: "Education",
-    chapters: 20,
-    words: 32000,
-    format: "Workbook"
-  },
-  {
-    id: "aitech",
-    name: "AI / technology",
-    blurb: "Tutorials · worked examples · workflows · update cadence",
-    category: "AI / Tech",
-    chapters: 16,
-    words: 48000,
-    format: "EPUB / PDF"
-  }
+  { id: "adventure",  name: "Adventure",          kind: "fiction",    category: "Mythology", chapters: 24, words: 78000, format: "EPUB / PDF",
+    blurb: "Expedition stakes · pursuit beats · survival tension · QA" },
+  { id: "mystery",    name: "Mystery",            kind: "fiction",    category: "Mystery",   chapters: 26, words: 82000, format: "EPUB / PDF",
+    blurb: "Clue planting · red herrings · reveal timing · continuity" },
+  { id: "literary",   name: "Literary fiction",   kind: "fiction",    category: "Mythology", chapters: 20, words: 74000, format: "EPUB / PDF",
+    blurb: "Character interiority · restraint · motif · line editing" },
+  { id: "scifi",      name: "Science fiction",    kind: "fiction",    category: "Mystery",   chapters: 22, words: 80000, format: "EPUB / PDF",
+    blurb: "World rules · consequence · first contact · consistency" },
+  { id: "history",    name: "Narrative history",  kind: "nonfiction", category: "Education", chapters: 16, words: 62000, format: "EPUB / PDF",
+    blurb: "Primary sources · chronology · figures · fact check" },
+  { id: "selfhelp",   name: "Practical self-help", kind: "nonfiction", category: "Health",   chapters: 12, words: 42000, format: "EPUB / PDF",
+    blurb: "One idea per chapter · drills · evidence · no filler" },
+  { id: "business",   name: "Business and finance", kind: "nonfiction", category: "Finance", chapters: 14, words: 52000, format: "EPUB / PDF",
+    blurb: "Worked numbers · pricing · case studies · charts" },
+  { id: "art",        name: "Art and craft",      kind: "nonfiction", category: "Education", chapters: 18, words: 38000, format: "Workbook",
+    blurb: "Exercises · progression · reference plates · answer keys" },
+  { id: "cooking",    name: "Cooking",            kind: "nonfiction", category: "Health",    chapters: 20, words: 45000, format: "EPUB / PDF",
+    blurb: "Tested method · ratios · substitutions · timings" },
+  { id: "science",    name: "Popular science",    kind: "nonfiction", category: "Education", chapters: 14, words: 55000, format: "EPUB / PDF",
+    blurb: "Mechanism first · analogy · diagrams · sourcing" },
+  { id: "wellness",   name: "Health and wellness", kind: "nonfiction", category: "Health",   chapters: 12, words: 40000, format: "EPUB / PDF",
+    blurb: "Protocols · evidence grading · caveats · progression" },
+  { id: "technology", name: "Technology",         kind: "nonfiction", category: "AI / Tech", chapters: 16, words: 48000, format: "EPUB / PDF",
+    blurb: "Tutorials · worked examples · workflows · update cadence" },
+  { id: "workbook",   name: "Workbook",           kind: "nonfiction", category: "Education", chapters: 20, words: 32000, format: "Workbook",
+    blurb: "Exercises · answer keys · difficulty ramp · QA" }
 ];
 
 var DEFAULT_SCHEDULE = {
@@ -1013,7 +1010,7 @@ function renderChrome() {
   var s = summary();
 
   $("navCountLibrary").textContent = s.total;
-  $("navCountProduction").textContent = s.queued;
+  $("navCountProduction").textContent = state.books.filter(function (b) { return !isLive(b); }).length;
   $("navCountPublishing").textContent = s.passing;
 
   $("runState").textContent = ui.running ? "RUNNING" : (s.counts.BLOCKED ? "ATTENTION" : "IDLE");
@@ -1091,7 +1088,10 @@ function renderDashboard() {
     statRow("Titles on sale", "<strong>" + s.counts.LIVE + "</strong>")
   ].join("");
 
-  var jobs = state.books.slice().sort(function (a, b) { return b.updatedAt - a.updatedAt; }).slice(0, 6);
+  var jobs = state.books
+    .filter(function (b) { return !isLive(b); })
+    .sort(function (a, b) { return b.updatedAt - a.updatedAt; })
+    .slice(0, 6);
 
   $("recentJobs").innerHTML = jobs.length
     ? jobs.map(function (book) {
@@ -1105,7 +1105,12 @@ function renderDashboard() {
           '<td><button type="button" class="btn tiny" data-action="view-book" data-id="' + escapeHTML(book.id) + '">Open</button></td>' +
           "</tr>";
       }).join("")
-    : emptyRow(5, "No books yet — add one to get started.");
+    : emptyRow(
+        5,
+        state.books.length
+          ? "Nothing in production — every title is on sale."
+          : "No books yet — add one to get started.",
+      );
 
   $("activityFeed").innerHTML = state.activity.length
     ? state.activity.slice(0, 12).map(function (entry) {
@@ -1195,6 +1200,11 @@ function spineColor(category) {
   return palette[category] || "var(--muted)";
 }
 
+/** Titles genuinely still being worked on - everything not yet on sale. */
+function rowsInProduction() {
+  return state.books.filter(function (b) { return !isLive(b); }).length;
+}
+
 function renderProduction() {
   var s = summary();
   var jobs = eligibleJobs();
@@ -1203,12 +1213,12 @@ function renderProduction() {
     metricCard("Queued", String(s.queued), jobs.length + " eligible now"),
     metricCard("Running", ui.running ? "YES" : "NO", ui.running ? "Ticking every 1.1s" : "Queue idle"),
     metricCard("Blocked", String(s.counts.BLOCKED), "Resolve blockers to resume"),
-    metricCard("Chapters drafted", formatNumber(s.chapters), "Across the portfolio")
+    metricCard("In production", String(rowsInProduction()), "excludes titles on sale")
   ].join("");
 
   $("stageLegend").textContent = STAGES.join(" → ");
 
-  var rows = state.books.slice().sort(function (a, b) {
+  var rows = state.books.filter(function (b) { return !isLive(b); }).sort(function (a, b) {
     if (a.queued !== b.queued) return a.queued ? -1 : 1;
     if (a.priority !== b.priority) return a.priority === "high" ? -1 : 1;
     return progressOf(b) - progressOf(a);
@@ -1230,16 +1240,20 @@ function renderProduction() {
             '<div class="small muted">' + pct + "%</div></td>" +
           "<td>" + pill(status, statusClass(status)) + "</td>" +
           '<td class="nowrap">' +
-            // A title that is already on sale has nothing left to advance.
-            (isLive(book)
-              ? '<span class="small muted">on sale</span>'
-              : '<button type="button" class="btn tiny" data-action="advance-book" data-id="' + escapeHTML(book.id) + '">Advance</button> ' +
-                '<button type="button" class="btn tiny" data-action="toggle-queue" data-id="' + escapeHTML(book.id) + '">' +
-                  (book.queued ? "Dequeue" : "Queue") + "</button>") +
+            '<button type="button" class="btn tiny" data-action="advance-book" data-id="' + escapeHTML(book.id) + '">Advance</button> ' +
+            '<button type="button" class="btn tiny" data-action="toggle-queue" data-id="' + escapeHTML(book.id) + '">' +
+              (book.queued ? "Dequeue" : "Queue") + "</button>" +
           "</td>" +
           "</tr>";
       }).join("")
-    : emptyRow(7, ui.onlyActive ? "No active jobs in the queue." : "The library is empty.");
+    : emptyRow(
+        7,
+        ui.onlyActive
+          ? "No active jobs in the queue."
+          : summary().counts.LIVE === state.books.length && state.books.length
+            ? "Every title in the catalogue is on sale. Nothing is in production."
+            : "The library is empty.",
+      );
 }
 
 function renderScheduler() {
