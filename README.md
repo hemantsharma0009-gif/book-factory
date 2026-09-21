@@ -46,6 +46,24 @@ automatic QA enabled runs real checks (undrafted chapters, word count below 75% 
 target, incomplete metadata) and raises blockers that stop the book until they are
 resolved.
 
+## Production engine
+
+The dashboard is the operations console. The **engine** (`engine/`) is what
+actually produces books: it plans, drafts, edits, illustrates, packages and — once
+you approve — publishes them.
+
+```bash
+cd engine && npm install
+node src/cli.js generate --dry-run   # free, no API key required
+npm start                            # approval console at 127.0.0.1:4321
+```
+
+Books cost roughly **$1** each to produce on `claude-sonnet-5` (Batch API at 50%
+off, plus prompt caching). Gumroad publishing is fully automatic; Amazon KDP is
+not, because **Amazon publishes no upload API** — the engine instead fills in
+every field of the KDP form for you in `KDP-UPLOAD-SHEET.md`, including the
+required AI-content disclosure. See `engine/README.md`.
+
 ## Project layout
 
 ```
