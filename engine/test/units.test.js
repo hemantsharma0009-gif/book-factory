@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import JSZip from "jszip";
 import { nextGenre, nextAngle, GENRES } from "../src/genres.js";
 import { markdownToXhtml, buildEpub } from "../src/epub.js";
 import { buildKdpPack } from "../src/publish/kdp.js";
@@ -469,4 +470,88 @@ test("a stub fiction listing reads as English, not as a template", () => {
   assert.doesNotMatch(plan.audience, /\ba adventure\b/);
   assert.match(plan.audience, /\ban adventure\b/);
   assert.doesNotMatch(plan.subtitle, /novel of lost city/);
+});
+
+test("a non-English book is tagged in every place a reader looks", async () => {
+  // dc:language alone is not enough: a reading system takes hyphenation, font
+  // fallback and the speech voice from the xml:lang on each document.
+  const buffer = await buildEpub({
+    title: "शीर्षक", subtitle: "उपशीर्षक", author: "लेखक", description: "विवरण",
+    language: "hi",
+    chapters: [{ number: 1, title: "पहला अध्याय", body: "नमस्ते।" }],
+    figures: new Map(),
+  });
+
+  const zip = await JSZip.loadAsync(buffer);
+  const opf = await zip.file("OEBPS/content.opf").async("string");
+  assert.match(opf, /<dc:language>hi<\/dc:language>/);
+  assert.match(opf, /xml:lang="hi"/);
+
+  for (const name of ["OEBPS/title.xhtml", "OEBPS/chap001.xhtml", "OEBPS/nav.xhtml"]) {
+    const doc = await zip.file(name).async("string");
+    assert.match(doc, /lang="hi"/, `${name} is not tagged as Hindi`);
+    assert.doesNotMatch(doc, /lang="en"/, `${name} is still tagged as English`);
+  }
+});
+
+test("the book's own furniture is translated, not left in English", async () => {
+  const buffer = await buildEpub({
+    title: "शीर्षक", author: "लेखक", language: "hi",
+    chapters: [{ number: 3, title: "तीसरा", body: "पाठ।" }],
+    figures: new Map(),
+  });
+  const zip = await JSZip.loadAsync(buffer);
+
+  const nav = await zip.file("OEBPS/nav.xhtml").async("string");
+  assert.match(nav, /विषय-सूची/);
+  assert.doesNotMatch(nav, />Contents</);
+
+  const chapter = await zip.file("OEBPS/chap001.xhtml").async("string");
+  assert.match(chapter, /अध्याय 3/);
+  assert.doesNotMatch(chapter, /Chapter 3/);
+});
+
+test("an unlabelled language falls back to English rather than guessing", async () => {
+  // Better a Swedish book that says "Chapter" than one that says a word no
+  // one checked.
+  const buffer = await buildEpub({
+    title: "T", author: "A", language: "sv",
+    chapters: [{ number: 1, title: "Ett", body: "Hej." }],
+    figures: new Map(),
+  });
+  const zip = await JSZip.loadAsync(buffer);
+  const chapter = await zip.file("OEBPS/chap001.xhtml").async("string");
+  assert.match(chapter, /Chapter 1/);
+  assert.match(chapter, /lang="sv"/);   // still tagged correctly
+});
+
+test("a right-to-left language sets the text direction", async () => {
+  const buffer = await buildEpub({
+    title: "ع", author: "ع", language: "ar", rtl: true,
+    chapters: [{ number: 1, title: "الفصل", body: "نص." }],
+    figures: new Map(),
+  });
+  const zip = await JSZip.loadAsync(buffer);
+  assert.match(await zip.file("OEBPS/chap001.xhtml").async("string"), /dir="rtl"/);
+});
+
+test("the kdp sheet names the book's language and asks you to confirm it", () => {
+  const book = baseBook({ genre: "cooking" });
+  book.language = "hi";
+  const pack = buildKdpPack({ book, epubName: "x.epub" });
+  assert.match(pack.markdown, /\| Language \| Hindi \(हिन्दी\) \|/);
+  assert.match(pack.markdown, /Confirm \*\*Hindi\*\* appears in KDP's Language dropdown/);
+});
+
+test("the kdp sheet stays English-clean for an English book", () => {
+  const pack = buildKdpPack({ book: baseBook({ genre: "cooking" }), epubName: "x.epub" });
+  assert.match(pack.markdown, /\| Language \| English \|/);
+  assert.doesNotMatch(pack.markdown, /Language dropdown/);
+});
+
+test("an unknown language is a warning, not a silent English book", () => {
+  const book = baseBook({ genre: "cooking" });
+  book.language = "klingon";
+  const pack = buildKdpPack({ book, epubName: "x.epub" });
+  assert.ok(pack.warnings.some((w) => /Unknown language "klingon"/.test(w)));
 });

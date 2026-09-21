@@ -49,7 +49,40 @@ export const DEFAULTS = {
   frontMatter: true,
   charts: true,
   priceUsd: 9.99,
+  language: "en",
 };
+
+/**
+ * Languages a book can be written in.
+ *
+ * `code` is the BCP-47 tag that goes into the EPUB (dc:language and every
+ * xml:lang), because a reader that does not know the language hyphenates and
+ * renders it wrongly. `endonym` is the name in the language itself, which is
+ * what belongs on the title page. `rtl` drives the text direction.
+ *
+ * KDP publishes its own list of accepted languages and changes it, so the
+ * handoff sheet tells you to confirm the language appears in the dropdown
+ * rather than asserting that it does.
+ */
+export const LANGUAGES = {
+  en: { code: "en", name: "English", endonym: "English", script: "Latin" },
+  hi: { code: "hi", name: "Hindi", endonym: "हिन्दी", script: "Devanagari" },
+  mr: { code: "mr", name: "Marathi", endonym: "मराठी", script: "Devanagari" },
+  bn: { code: "bn", name: "Bengali", endonym: "বাংলা", script: "Bengali" },
+  gu: { code: "gu", name: "Gujarati", endonym: "ગુજરાતી", script: "Gujarati" },
+  ta: { code: "ta", name: "Tamil", endonym: "தமிழ்", script: "Tamil" },
+  te: { code: "te", name: "Telugu", endonym: "తెలుగు", script: "Telugu" },
+  ml: { code: "ml", name: "Malayalam", endonym: "മലയാളം", script: "Malayalam" },
+  es: { code: "es", name: "Spanish", endonym: "Español", script: "Latin" },
+  fr: { code: "fr", name: "French", endonym: "Français", script: "Latin" },
+  de: { code: "de", name: "German", endonym: "Deutsch", script: "Latin" },
+  pt: { code: "pt", name: "Portuguese", endonym: "Português", script: "Latin" },
+  ar: { code: "ar", name: "Arabic", endonym: "العربية", script: "Arabic", rtl: true },
+};
+
+export function languageById(id) {
+  return LANGUAGES[String(id || "").toLowerCase()] || null;
+}
 
 /**
  * How many recent genres to exclude when picking the next one. The user's

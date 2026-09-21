@@ -83,8 +83,8 @@ function buildWindow(chapters, target) {
     .join("\n\n");
 }
 
-export async function editChapters({ plan, genre, chapters, onProgress, log = () => {} }) {
-  const bible = buildBible(plan, genre);
+export async function editChapters({ plan, genre, chapters, onProgress, log = () => {}, language }) {
+  const bible = buildBible(plan, genre, language);
   const manuscript = buildManuscript(chapters);
   const windowed = manuscript.length > MAX_MANUSCRIPT_CHARS;
 

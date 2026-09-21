@@ -16,6 +16,7 @@ import { buildKdpPack } from "./publish/kdp.js";
 import { publishToGumroad } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt } from "./scheduler.js";
 import { GENRES } from "./genres.js";
+import { DEFAULTS, LANGUAGES } from "./config.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 4321);
@@ -59,6 +60,7 @@ const routes = {
       nextRunAt: nextRunAt(state.schedule, state.runs[0]?.at),
       cadences: CADENCES,
       genres: GENRES.map((g) => ({ id: g.id, name: g.name, kind: g.kind })),
+      languages: Object.values(LANGUAGES),
       genreHistory: state.genreHistory.slice(0, 12),
       runs: state.runs.slice(0, 20),
       activeRun,
@@ -79,6 +81,7 @@ const routes = {
       wordsPerChapter: Number(body.words) || 2200,
       images: body.images || "charts",
       author: body.author || "Book Factory Studio",
+      language: body.language || DEFAULTS.language,
       log: (line) => activeRun.lines.push({ at: Date.now(), line }),
     })
       .then((book) => {

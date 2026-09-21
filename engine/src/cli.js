@@ -2,7 +2,8 @@
 /**
  * Command line entry point.
  *
- *   generate [--genre id] [--chapters n] [--words n] [--images charts|none] [--dry-run]
+ *   generate [--genre id] [--language hi] [--chapters n] [--words n]
+           [--images charts|none] [--dry-run]
            [--sample n]          write only the first n chapters (default 2) to
                                  judge the prose cheaply before a full run
  *   status
@@ -22,6 +23,7 @@ import { buildKdpPack } from "./publish/kdp.js";
 import { publishToGumroad, listGumroadProducts } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt, isDue, shouldRun } from "./scheduler.js";
 import { GENRES } from "./genres.js";
+import { DEFAULTS, LANGUAGES } from "./config.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -53,6 +55,7 @@ async function main() {
         wordsPerChapter: Number(flag("words", 2200)),
         images: String(flag("images", "charts")),
         author: String(flag("author", "Book Factory Studio")),
+        language: String(flag("language", DEFAULTS.language)),
         sample: sampleFlag ? Number(sampleFlag === true ? 2 : sampleFlag) : 0,
         log,
       });
@@ -194,6 +197,14 @@ async function main() {
     }
 
     // Reconcile a hand-published catalogue with the dashboard.
+    case "languages": {
+      for (const l of Object.values(LANGUAGES)) {
+        log(`  ${l.code.padEnd(3)} ${l.name.padEnd(12)} ${l.endonym}`);
+      }
+      log(`\nUse: node src/cli.js generate --language hi`);
+      break;
+    }
+
     case "gumroad-list": {
       const products = await listGumroadProducts();
       if (!products.length) return log("No products found in that Gumroad account.");
@@ -227,6 +238,7 @@ async function main() {
            [--sample n]          write only the first n chapters (default 2) to
                                  judge the prose cheaply before a full run
   status | show <id> | genres
+  languages                       list the languages a book can be written in
   approve <id> | reject <id> [reason]
   pack <id>                       write the KDP upload sheet
   publish <id> --gumroad [--dry-run]

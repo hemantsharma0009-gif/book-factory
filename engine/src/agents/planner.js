@@ -6,7 +6,7 @@
  */
 import { z } from "zod";
 import { structured } from "../model.js";
-import { DEFAULTS } from "../config.js";
+import { DEFAULTS, LANGUAGES } from "../config.js";
 import { genericTitleReason } from "./title-check.js";
 
 const ChapterSchema = z.object({
@@ -59,9 +59,20 @@ Never produce:
 
 Test: could this title sit on a hundred other books? If yes, write another one.`;
 
-export async function planBook({ genre, angle, chapters = DEFAULTS.chapters, wordsPerChapter }) {
-  const prompt = `Plan a ${genre.kind} book in the "${genre.name}" genre, approaching it through: ${angle}.
+export async function planBook({ genre, angle, chapters = DEFAULTS.chapters, wordsPerChapter, language = LANGUAGES.en }) {
+  // The whole plan - title, subtitle, chapter titles, style rules - has to be
+  // in the book's language, or the drafting step spends every chapter
+  // translating its own instructions.
+  const inLanguage = language.code === "en"
+    ? ""
+    : `\nWrite EVERYTHING in ${language.name} (${language.endonym}), in the ${language.script} script:
+the title, the subtitle, the premise, the audience, every chapter title and
+summary, the style rules and the recurring terms. Do not write them in English
+and do not transliterate ${language.name} into Latin letters. Write for a reader
+who reads ${language.name} as a first language, not for a translation.\n`;
 
+  const prompt = `Plan a ${genre.kind} book in the "${genre.name}" genre, approaching it through: ${angle}.
+${inLanguage}
 Requirements:
 - ${chapters} chapters, roughly ${wordsPerChapter} words each.
 - A title drawn from something concrete in this specific book - an image, a
@@ -176,8 +187,13 @@ export function stubPlan({ genre, angle, chapters, variant = 0 }) {
  * The series bible: the shared, cached prefix sent with every chapter request.
  * Must be byte-identical across a batch or the cache will not hit.
  */
-export function buildBible(plan, genre) {
+export function buildBible(plan, genre, language = LANGUAGES.en) {
   return `You are drafting chapters of a single book. Hold to this bible exactly.
+
+LANGUAGE: ${language.name} (${language.endonym}) - write every word of the
+manuscript in ${language.name}, in the ${language.script} script. Chapter
+headings, dialogue, examples and any list are all in ${language.name}. Never
+switch to English, and never transliterate into Latin letters.
 
 TITLE: ${plan.title}
 SUBTITLE: ${plan.subtitle}
