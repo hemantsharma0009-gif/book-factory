@@ -19,7 +19,7 @@ import path from "node:path";
 import * as store from "./store.js";
 import { produceBook, slug } from "./pipeline.js";
 import { buildKdpPack } from "./publish/kdp.js";
-import { publishToGumroad } from "./publish/gumroad.js";
+import { publishToGumroad, listGumroadProducts } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt, isDue, shouldRun } from "./scheduler.js";
 import { GENRES } from "./genres.js";
 
@@ -193,6 +193,28 @@ async function main() {
       break;
     }
 
+    // Reconcile a hand-published catalogue with the dashboard.
+    case "gumroad-list": {
+      const products = await listGumroadProducts();
+      if (!products.length) return log("No products found in that Gumroad account.");
+
+      log(`${products.length} product(s) on Gumroad:\n`);
+      for (const p of products) {
+        log(`  ${p.published ? "LIVE " : "draft"}  ${p.title}`);
+        log(`         ${p.url}`);
+        if (p.sales != null) {
+          log(`         ${p.sales} sale(s)${p.revenueUsd != null ? ` · $${p.revenueUsd.toFixed(2)}` : ""}`);
+        }
+      }
+
+      // Paste-ready for the dashboard's bulk import.
+      log(`\nPaste this into the dashboard (Library → Import live titles):\n`);
+      for (const p of products.filter((x) => x.published)) {
+        log(`${p.title} | ${p.url}`);
+      }
+      break;
+    }
+
     case "genres": {
       for (const g of GENRES) log(`  ${g.id.padEnd(12)} ${g.name} (${g.kind})`);
       break;
@@ -208,6 +230,7 @@ async function main() {
   approve <id> | reject <id> [reason]
   pack <id>                       write the KDP upload sheet
   publish <id> --gumroad [--dry-run]
+  gumroad-list                    list what is already on sale in your Gumroad
   schedule --cadence daily|weekly|fortnightly|monthly --time HH:MM [--off]
            [--max-pending n] [--budget usd]
   should-run                      exit 0 when cron should generate (due + guards)

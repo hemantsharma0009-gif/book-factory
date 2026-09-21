@@ -1754,6 +1754,87 @@ function markLive(id) {
   toast(book.title + " is now marked LIVE on " + store + ".", "ok");
 }
 
+/**
+ * Bulk-marks published titles from pasted "Title | URL" lines.
+ *
+ * Gumroad can produce that list from its API (`node src/cli.js gumroad-list`).
+ * Amazon and KDP publish no such API, so those lines are pasted by hand - which
+ * is still far quicker than editing each book in turn.
+ */
+function importLive() {
+  var pasted = prompt(
+    "Paste one line per published book:\n\n" +
+      "    Title | https://link-to-the-listing\n\n" +
+      "Titles are matched loosely against your library. " +
+      "Run `node src/cli.js gumroad-list` in the engine to generate these for Gumroad.",
+    "",
+  );
+  if (!pasted || !pasted.trim()) return;
+
+  var matched = 0;
+  var unmatched = [];
+
+  pasted.split(/\n+/).forEach(function (line) {
+    if (!line.trim()) return;
+
+    var parts = line.split("|");
+    var title = String(parts[0] || "").trim();
+    var url = String(parts.slice(1).join("|") || "").trim();
+
+    if (!title || !/^https?:\/\//i.test(url)) {
+      unmatched.push(line.trim() + "  (needs: Title | https://…)");
+      return;
+    }
+
+    var needle = title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    var book = state.books.filter(function (b) {
+      var hay = b.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      return hay === needle || hay.indexOf(needle) === 0 || needle.indexOf(hay) === 0;
+    })[0];
+
+    if (!book) {
+      unmatched.push(title + "  (no matching book in the library)");
+      return;
+    }
+
+    var host = url.toLowerCase();
+    var store = /amazon\.|amzn\.|kdp\./.test(host)
+      ? "amazon"
+      : /gumroad\./.test(host)
+        ? "gumroad"
+        : "other";
+
+    book.storefronts[store] = url;
+    book.publishedAt = book.publishedAt || Date.now();
+    book.queued = false;
+    book.stage = "Publishing";
+    touch(book);
+    matched += 1;
+  });
+
+  if (matched) {
+    log("library", "Imported " + matched + " published title(s).");
+    save();
+    render();
+  }
+
+  toast(
+    matched + " marked on sale" + (unmatched.length ? ", " + unmatched.length + " could not be matched" : "."),
+    unmatched.length ? "warn" : "ok",
+  );
+
+  if (unmatched.length) {
+    openModal(
+      "Lines that did not match",
+      '<p class="small muted">Everything else was imported. These need a closer look — check the title spelling against your library, or add the book first.</p>' +
+        '<ul class="feed">' +
+        unmatched.map(function (line) { return "<li><span>" + escapeHTML(line) + "</span></li>"; }).join("") +
+        "</ul>" +
+        '<div class="actions section"><button type="button" class="btn" data-action="close-modal">Close</button></div>',
+    );
+  }
+}
+
 function advanceBook(id) {
   var book = findBook(id);
   if (!book) return;
@@ -2093,6 +2174,7 @@ var ACTIONS = {
   "delete-book": function (el) { deleteBook(el.dataset.id); },
   "toggle-queue": function (el) { toggleQueue(el.dataset.id); },
   "mark-live": function (el) { markLive(el.dataset.id); },
+  "import-live": importLive,
   "advance-book": function (el) { advanceBook(el.dataset.id); },
   "resolve-issue": function (el) { resolveIssue(el.dataset.id, el.dataset.issue); },
   "use-blueprint": function (el) { useBlueprint(el.dataset.id); },

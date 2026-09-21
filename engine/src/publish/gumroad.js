@@ -121,3 +121,25 @@ async function uploadFile({ productId, buffer, name }) {
 
   return { fileUrl: completed.file_url };
 }
+
+/**
+ * Lists the products already on sale in the connected Gumroad account.
+ *
+ * This is how a catalogue that was published by hand gets reconciled with the
+ * dashboard: Gumroad knows what is live, so ask it rather than retyping.
+ * Amazon and KDP have no equivalent - there is no API to ask.
+ */
+export async function listGumroadProducts() {
+  const payload = await call("/products");
+  const products = Array.isArray(payload.products) ? payload.products : [];
+
+  return products.map((product) => ({
+    id: product.id,
+    title: product.name,
+    url: product.short_url,
+    published: product.published === true,
+    priceUsd: typeof product.price === "number" ? product.price / 100 : null,
+    sales: product.sales_count ?? null,
+    revenueUsd: typeof product.sales_usd_cents === "number" ? product.sales_usd_cents / 100 : null,
+  }));
+}
