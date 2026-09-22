@@ -12,11 +12,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as store from "./store.js";
 import { produceBook } from "./pipeline.js";
-import { buildKdpPack } from "./publish/kdp.js";
+import { buildKdpPack, writeKdpPack } from "./publish/kdp.js";
 import { publishToGumroad } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt } from "./scheduler.js";
 import { GENRES } from "./genres.js";
 import { DEFAULTS, LANGUAGES } from "./config.js";
+import { deliverBook } from "./deliver.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 4321);
@@ -84,7 +85,14 @@ const routes = {
       language: body.language || DEFAULTS.language,
       log: (line) => activeRun.lines.push({ at: Date.now(), line }),
     })
-      .then((book) => {
+      .then(async (book) => {
+        // Same promise as the CLI: a book made here also lands in your Drive,
+        // and the upload sheet is written first so it travels with it.
+        await writeKdpPack(book.id);
+        await deliverBook({
+          id: book.id,
+          log: (line) => activeRun.lines.push({ at: Date.now(), line }),
+        });
         activeRun = { ...activeRun, done: true, bookId: book.id, finishedAt: Date.now() };
       })
       .catch((err) => {

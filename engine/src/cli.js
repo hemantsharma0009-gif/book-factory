@@ -12,6 +12,8 @@
  *   reject <bookId> [reason]
  *   publish <bookId> [--gumroad] [--dry-run]
  *   pack <bookId>                 write the KDP upload sheet
+ *   deliver [bookId]              copy a book to BOOK_FACTORY_DELIVER_TO (your
+ *                                 Drive folder). New books deliver themselves.
  *   share <bookId> [--hours n] [--insecure]
  *                                 serve this one book read-only on your LAN over
  *                                 HTTPS, so you can read it on a phone before
@@ -23,12 +25,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import * as store from "./store.js";
 import { produceBook, slug } from "./pipeline.js";
-import { buildKdpPack } from "./publish/kdp.js";
+import { buildKdpPack, writeKdpPack } from "./publish/kdp.js";
 import { publishToGumroad, listGumroadProducts } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt, isDue, shouldRun } from "./scheduler.js";
 import { GENRES } from "./genres.js";
 import { DEFAULTS, LANGUAGES } from "./config.js";
 import { createShareServer, mintLink, lanAddresses, makeCertificate } from "./share.js";
+import { deliverBook, deliverTarget, likelyDriveFolders } from "./deliver.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -65,6 +68,11 @@ async function main() {
         log,
       });
       await writePack(book.id);
+
+      // The upload sheet has to exist before the copy, or your Drive gets the
+      // book without the instructions for publishing it.
+      await deliverBook({ id: book.id, log });
+
       log(`\nArtifacts: ${store.bookDir(book.id)}`);
       log(`Review it, then: node src/cli.js approve ${book.id}`);
       break;
@@ -281,6 +289,40 @@ trust, and never with the port forwarded to the internet.`);
       break;
     }
 
+    case "deliver": {
+      const target = deliverTarget();
+      const id = args[1];
+
+      if (!target) {
+        log("Delivery is off: BOOK_FACTORY_DELIVER_TO is not set.\n");
+        const found = await likelyDriveFolders();
+        if (found.length) {
+          log("Sync folders found on this machine:\n");
+          for (const dir of found) log(`  ${dir}`);
+          log(`\nPick one and add it to engine/.env, with a subfolder of your choosing:\n`);
+          log(`  BOOK_FACTORY_DELIVER_TO=${found[0]}/Book Factory\n`);
+        } else {
+          log("No Google Drive, Dropbox or OneDrive folder found here.\n");
+          log("Either install Google Drive for Desktop and re-run this, or use rclone:\n");
+          log("  rclone config            # once, to authorise Google Drive");
+          log("  BOOK_FACTORY_DELIVER_TO=rclone:gdrive:Book Factory\n");
+        }
+        log("Every book generated after that lands there by itself.");
+        break;
+      }
+
+      if (!id) {
+        log(`Delivering to: ${target}`);
+        log(`New books land there automatically. To send an existing one:\n`);
+        log(`  node src/cli.js deliver <bookId>`);
+        break;
+      }
+
+      const result = await deliverBook({ id, log });
+      if (!result.delivered) process.exitCode = 1;
+      break;
+    }
+
     case "languages": {
       for (const l of Object.values(LANGUAGES)) {
         log(`  ${l.code.padEnd(3)} ${l.name.padEnd(12)} ${l.endonym}`);
@@ -324,6 +366,7 @@ trust, and never with the port forwarded to the internet.`);
   status | show <id> | genres
   languages                       list the languages a book can be written in
   share <id> [--hours n]          read it on your phone before approving
+  deliver [id]                    copy a book to your Drive folder (no id: set-up help)
   approve <id> | reject <id> [reason]
   pack <id>                       write the KDP upload sheet
   publish <id> --gumroad [--dry-run]
@@ -336,15 +379,8 @@ trust, and never with the port forwarded to the internet.`);
 }
 
 async function writePack(id) {
-  const state = await store.load();
-  const book = store.findBook(state, id);
-  if (!book) throw new Error(`No book ${id}`);
-  const pack = buildKdpPack({ book, epubName: book.epubFile });
-  const file = path.join(store.bookDir(id), "KDP-UPLOAD-SHEET.md");
-  await fs.writeFile(file, pack.markdown);
-  if (pack.warnings.length) {
-    for (const w of pack.warnings) process.stderr.write(`  warning: ${w}\n`);
-  }
+  const { file, warnings } = await writeKdpPack(id);
+  for (const w of warnings) process.stderr.write(`  warning: ${w}\n`);
   return file;
 }
 

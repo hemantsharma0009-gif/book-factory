@@ -136,3 +136,44 @@ something else is answering on that address.
 `--insecure` falls back to plain HTTP for a machine with no `openssl`. On that
 path the book and the link are readable by anyone who can watch traffic on the
 network, so it is for a network you trust and never for a forwarded port.
+
+## Every new book landing in your Drive
+
+Set one line in `engine/.env`:
+
+```bash
+BOOK_FACTORY_DELIVER_TO=/Users/you/Library/CloudStorage/GoogleDrive-you@gmail.com/My Drive/Book Factory
+```
+
+Every book generated after that - by you, by the review console, or by the
+scheduler at 3am - copies itself there when it is finished. Each one gets its
+own dated folder holding the EPUB, the KDP upload sheet, the cover, the
+manuscript, the plan, and a plain-language note saying what the book is and
+what to do with it.
+
+Not sure of the path? `node src/cli.js deliver` prints the sync folders it can
+find on your machine.
+
+This deliberately uses your existing sync client rather than the Google Drive
+API. A direct integration would mean this engine holding a refresh token with
+write access to your whole Drive, on top of the API key and the Gumroad token
+it already needs. Letting Drive for Desktop do the uploading gives the same
+result and asks you for nothing.
+
+**On a headless machine** with no sync client, use
+[rclone](https://rclone.org) instead:
+
+```bash
+rclone config                                    # once, to authorise Drive
+BOOK_FACTORY_DELIVER_TO=rclone:gdrive:Book Factory
+```
+
+Two things worth knowing:
+
+- **The target folder must already exist.** If it does not, delivery fails and
+  says so. Creating it would be worse: with Drive not running, the engine would
+  make an ordinary local folder that never syncs, and you would believe your
+  books were in the cloud until you noticed they were not.
+- **A failed delivery never costs you the book.** The copy is the last step,
+  the failure is reported with the path the book is actually at, and
+  `node src/cli.js deliver <bookId>` retries it.
