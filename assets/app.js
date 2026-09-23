@@ -433,6 +433,10 @@ function normaliseBook(raw, index) {
     // fields above: this function rebuilds a book from a fixed list, so an
     // omission here would silently discard every import on the next reload.
     sales: normaliseSales(book.sales),
+    // Where the manuscript actually lives. Only http(s) survives: this value
+    // is rendered as an href, and a "javascript:" link in an imported library
+    // would be script execution one click away.
+    manuscriptUrl: safeLink(book.manuscriptUrl),
     generated: book.generated === true,
     issues: Array.isArray(book.issues) ? book.issues.filter(Boolean).map(function (issue) {
       return {
@@ -520,6 +524,12 @@ function normalisePrices(raw) {
     if (value) out[store.id] = value;
   });
   return out;
+}
+
+/** A link safe to put in an href, or "" - see normaliseBook. */
+function safeLink(value) {
+  var url = String(value == null ? "" : value).trim();
+  return /^https?:\/\//i.test(url) ? url : "";
 }
 
 function normaliseStorefronts(raw) {
@@ -1414,7 +1424,12 @@ function renderLibrary() {
               }).join("") + "</div>"
             : "") +
           '<div class="actions">' +
-            '<button type="button" class="btn tiny" data-action="view-book" data-id="' + escapeHTML(book.id) + '">View</button>' +
+            (book.manuscriptUrl
+              ? '<a class="btn tiny primary" href="' + escapeHTML(book.manuscriptUrl) +
+                '" target="_blank" rel="noopener noreferrer">Read ↗</a>'
+              : '<button type="button" class="btn tiny" data-action="add-manuscript" data-id="' +
+                escapeHTML(book.id) + '">Add manuscript</button>') +
+            '<button type="button" class="btn tiny" data-action="view-book" data-id="' + escapeHTML(book.id) + '">Details</button>' +
             '<button type="button" class="btn tiny" data-action="edit-book" data-id="' + escapeHTML(book.id) + '">Edit</button>' +
             (live
               ? ""
@@ -2116,6 +2131,39 @@ function markListed(bookId, storeId) {
   save();
   render();
   toast(book.title + " is now listed on " + store.label + ".", "ok");
+}
+
+/**
+ * The dashboard holds no book text and never has - it tracks titles, not
+ * manuscripts. This records where the text actually lives, so a card can open
+ * the real thing instead of only describing it.
+ */
+function addManuscriptLink(id) {
+  var book = findBook(id);
+  if (!book) return;
+
+  var url = prompt(
+    "Where can you read “" + book.title + "”?\n\n" +
+      "Paste a Google Docs, Drive, Dropbox or any other link.\n" +
+      "Clear the box and press OK to remove an existing link.",
+    book.manuscriptUrl || "",
+  );
+  if (url === null) return;
+
+  var trimmed = String(url).trim();
+  if (trimmed && !safeLink(trimmed)) {
+    toast("That needs to be a link starting with http:// or https://", "warn");
+    return;
+  }
+
+  book.manuscriptUrl = safeLink(trimmed);
+  touch(book);
+  log("library", book.manuscriptUrl
+    ? "Manuscript link set for " + book.title + "."
+    : "Manuscript link removed from " + book.title + ".");
+  save();
+  render();
+  toast(book.manuscriptUrl ? "Link saved — the card now opens it." : "Link removed.", "ok");
 }
 
 function storeGuessFromUrl(url) {
@@ -2874,6 +2922,12 @@ function viewBook(id) {
       statRow("Word target", "<strong>" + formatNumber(book.words.target) + "</strong>") +
       statRow("Revenue", "<strong>" + formatMoney(book.revenue) + "</strong>") +
       statRow("Last updated", "<strong>" + relativeTime(book.updatedAt) + "</strong>") +
+      statRow(
+        "Manuscript",
+        book.manuscriptUrl
+          ? '<a href="' + escapeHTML(book.manuscriptUrl) + '" target="_blank" rel="noopener noreferrer">Read it ↗</a>'
+          : '<span class="muted">no link yet — Edit the book to add one</span>',
+      ) +
       (isLive(book)
         ? statRow(
             "On sale at",
@@ -2939,6 +2993,7 @@ function editBook(id) {
     storefronts: normaliseStorefronts({}),
     prices: {},
     liveOn: [],
+    manuscriptUrl: "",
   };
 
   function options(list, selected) {
@@ -3007,6 +3062,10 @@ function editBook(id) {
         }).join("") +
       "</fieldset>" +
 
+      '<label class="field"><span>Manuscript link <span class="small muted">— Google Docs, Drive, Dropbox, anywhere you keep the text</span></span>' +
+        '<input class="input" name="manuscriptUrl" type="url" placeholder="https://docs.google.com/document/d/…" value="' +
+        escapeHTML(draft.manuscriptUrl || "") + '"></label>' +
+
       '<label class="field"><span>Description (used for metadata validation)</span>' +
         '<textarea class="input" name="description" rows="3">' + escapeHTML(draft.description) + "</textarea></label>" +
 
@@ -3070,6 +3129,14 @@ function submitBookForm(book, form) {
   target_book.words = { done: drafted, target: target };
   target_book.revenue = Math.max(0, toNum(data.get("revenue"), 0));
   target_book.listPriceUsd = Math.max(0, toNum(data.get("listPrice"), 0)) || null;
+
+  var manuscript = String(data.get("manuscriptUrl") || "").trim();
+  if (manuscript && !safeLink(manuscript)) {
+    error.textContent = "The manuscript link needs to start with http:// or https://";
+    form.elements.manuscriptUrl.focus();
+    return;
+  }
+  target_book.manuscriptUrl = safeLink(manuscript);
 
   var storefronts = {};
   var liveOn = [];
@@ -3658,6 +3725,7 @@ var ACTIONS = {
   "toggle-queue": function (el) { toggleQueue(el.dataset.id); },
   "mark-live": function (el) { markLive(el.dataset.id); },
   "mark-listed": function (el) { markListed(el.dataset.id, el.dataset.store); },
+  "add-manuscript": function (el) { addManuscriptLink(el.dataset.id); },
   "toggle-gap-task": function (el) {
     var key = el.dataset.key;
     if (state.gapTasks[key]) delete state.gapTasks[key];

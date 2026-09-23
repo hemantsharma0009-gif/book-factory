@@ -178,6 +178,25 @@ Two things worth knowing:
   the failure is reported with the path the book is actually at, and
   `node src/cli.js deliver <bookId>` retries it.
 
+## Reading the books themselves
+
+The dashboard holds no book text and never has — it tracks titles, not
+manuscripts. A card's **Details** shows stage, chapters, price and store links;
+none of that is the book.
+
+Each book now carries a **manuscript link**: paste a Google Docs, Drive or
+Dropbox URL and the card gets a **Read ↗** button that opens it. Books with no
+link show **Add manuscript** instead, which asks for one in a single prompt.
+Clearing the field removes the link.
+
+Only `http://` and `https://` are accepted, and the same check runs again on
+every load — the value ends up in an `href`, and a `javascript:` link smuggled
+in through an imported library file would be script execution one click away.
+
+Books the engine generated need no link: their text is in
+`engine/library/books/<id>/`, readable in the review console
+(`node src/server.js`) and on a phone via `node src/cli.js share <bookId>`.
+
 ## Distribution gaps as a checklist
 
 The gaps table listed ten books missing from a store. It did not say which to
