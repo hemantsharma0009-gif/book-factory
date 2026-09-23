@@ -445,13 +445,31 @@
     </div>
   </div>
 
+  <div class="section card" id="salesImportCard">
+    <h2>Import sales from a storefront</h2>
+    <p class="muted small">
+      Amazon publishes no API for KDP, and Google Play offers report downloads
+      rather than a live feed — so the honest way to get real numbers off them
+      is the file you export from their console. Drop it here.
+      <strong>Save it as CSV first</strong> if the download is a spreadsheet.
+    </p>
+
+    <div class="actions">
+      <button type="button" class="btn primary" data-action="pick-sales-file">Choose a report…</button>
+      <input type="file" id="salesFile" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values" class="sr-only">
+      <span class="small muted" id="salesHint">KDP royalties · Play Books sales · Gumroad exports</span>
+    </div>
+
+    <div id="salesPreview" hidden></div>
+  </div>
+
   <div class="section card">
     <h2>Revenue</h2>
     <p class="muted small" id="revenueNote"></p>
 
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th>Title</th><th>Stores</th><th>List price</th><th>Revenue recorded</th></tr></thead>
+        <thead><tr><th>Title</th><th>Stores</th><th>List price</th><th>Units</th><th>Revenue</th><th>Source</th></tr></thead>
         <tbody id="revenueTable"></tbody>
       </table>
     </div>
@@ -505,6 +523,7 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
 
+<script src="assets/sales-parse.js"></script>
 <script src="assets/app.js"></script>
 
 </body>

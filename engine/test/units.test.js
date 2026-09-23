@@ -16,6 +16,7 @@ import { genericTitleReason } from "../src/agents/title-check.js";
 import { stubPlan } from "../src/agents/planner.js";
 import { __test as __editor } from "../src/agents/editor.js";
 import { mintLink, revokeLink, createShareServer, makeCertificate, __test as __share } from "../src/share.js";
+import { deliverBook, safeName, folderNameFor } from "../src/deliver.js";
 
 test("genre rotation never repeats within the cooldown window", () => {
   const history = [];
@@ -804,3 +805,119 @@ test("passcodes are six digits and not predictable", () => {
   // 200 draws from a million: a generator stuck in a rut shows up here.
   assert.ok(seen.size > 190, `only ${seen.size} distinct passcodes in 200 draws`);
 });
+
+test("delivered folder names survive both filesystems", () => {
+  // Windows forbids these outright; a trailing dot or space is silently
+  // dropped, which would make the next delivery create a second folder.
+  assert.equal(safeName('A/B\\C:D*E?F"G<H>I|J'), "A-B-C-D-E-F-G-H-I-J");
+  assert.equal(safeName("Trailing dot."), "Trailing dot");
+  assert.equal(safeName("Trailing space   "), "Trailing space");
+  assert.equal(safeName("  padded  out  "), "padded out");
+  assert.equal(safeName(""), "untitled");
+  assert.ok(safeName("x".repeat(200)).length <= 80);
+});
+
+test("a delivered folder is dated and titled, so Drive sorts it usefully", () => {
+  const name = folderNameFor({ title: "Nine Days: Above the Treeline", createdAt: Date.parse("2026-09-22T10:00:00Z") });
+  assert.equal(name, "2026-09-22 — Nine Days- Above the Treeline");
+});
+
+test("delivery copies every artifact and adds a plain-language note", async () => {
+  const { dir, bookId, target } = await stubLibrary();
+  try {
+    const result = await deliverBook({ id: bookId, target, log: () => {} });
+    assert.equal(result.delivered, true);
+
+    const landed = await fs.readdir(result.where);
+    for (const name of ["book.epub", "KDP-UPLOAD-SHEET.md", "cover.svg", "manuscript.md"]) {
+      assert.ok(landed.includes(name), `${name} did not arrive`);
+    }
+
+    // The note has to answer "what is this and what do I do with it" for
+    // someone opening the folder on a phone three weeks later.
+    const note = await fs.readFile(path.join(result.where, "ABOUT-THIS-BOOK.txt"), "utf8");
+    assert.match(note, /Stub Title/);
+    assert.match(note, /NOTHING IS PUBLISHED YET/);
+    assert.match(note, /approve bk_stub/);
+    assert.match(note, /KDP-UPLOAD-SHEET/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("delivery warns about a price outside the royalty band", async () => {
+  const { dir, bookId, target } = await stubLibrary({ priceUsd: 14.99 });
+  try {
+    const result = await deliverBook({ id: bookId, target, log: () => {} });
+    const note = await fs.readFile(path.join(result.where, "ABOUT-THIS-BOOK.txt"), "utf8");
+    assert.match(note, /35%/);
+    assert.match(note, /outside the \$2\.99-\$9\.99 band/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("delivering twice updates in place rather than piling up folders", async () => {
+  const { dir, bookId, target } = await stubLibrary();
+  try {
+    const first = await deliverBook({ id: bookId, target, log: () => {} });
+    const second = await deliverBook({ id: bookId, target, log: () => {} });
+    assert.equal(first.where, second.where);
+    assert.equal((await fs.readdir(target)).length, 1, "a second folder appeared");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a missing Drive folder fails loudly instead of faking a local one", async () => {
+  // If the sync client is off or the path has a typo, mkdir -p would happily
+  // create an ordinary folder that never syncs - and you would believe your
+  // books were in the cloud for as long as it took to notice.
+  const { dir, bookId } = await stubLibrary();
+  const ghost = path.join(dir, "no", "such", "place");
+  const lines = [];
+  try {
+    const result = await deliverBook({ id: bookId, target: ghost, log: (l) => lines.push(l) });
+    assert.equal(result.delivered, false);
+    assert.match(result.reason, /is the sync client running\?/);
+    assert.equal(fsSync.existsSync(ghost), false, "it created the folder anyway");
+
+    // And it must say where the book actually is, and how to retry.
+    assert.match(lines.join("\n"), /The book is safe in/);
+    assert.match(lines.join("\n"), /deliver bk_stub/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("delivery is off, not broken, when no target is configured", async () => {
+  const result = await deliverBook({ id: "bk_nope", target: null });
+  assert.equal(result.delivered, false);
+  assert.match(result.reason, /BOOK_FACTORY_DELIVER_TO/);
+});
+
+/** A throwaway library with one book on disk, and somewhere to deliver it. */
+async function stubLibrary({ priceUsd = 9.99 } = {}) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bf-deliver-"));
+  process.env.BOOK_FACTORY_DATA = dir;
+
+  const bookId = "bk_stub";
+  const book = {
+    id: bookId, title: "Stub Title", subtitle: "A subtitle", status: "awaiting_approval",
+    genreName: "Cooking", language: "en", wordCount: 1200, chapterCount: 2,
+    createdAt: Date.parse("2026-09-22T10:00:00Z"), epubFile: "book.epub",
+    listing: { priceUsd }, cost: { usd: 0.42 },
+  };
+
+  await fs.mkdir(path.join(dir, "books", bookId), { recursive: true });
+  for (const [name, body] of [["book.epub", "x"], ["KDP-UPLOAD-SHEET.md", "# sheet"],
+                              ["cover.svg", "<svg/>"], ["manuscript.md", "# ch"]]) {
+    await fs.writeFile(path.join(dir, "books", bookId, name), body);
+  }
+  await fs.writeFile(path.join(dir, "library.json"),
+    JSON.stringify({ version: 1, books: [book], genreHistory: [], schedule: null, runs: [] }));
+
+  const target = path.join(dir, "Drive");
+  await fs.mkdir(target, { recursive: true });
+  return { dir, bookId, target };
+}

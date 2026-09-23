@@ -9,6 +9,9 @@
 import { AI_DISCLOSURE } from "../pipeline.js";
 import { GENRES } from "../genres.js";
 import { languageById } from "../config.js";
+import fs from "node:fs/promises";
+import path from "node:path";
+import * as store from "../store.js";
 
 /** KDP's own limits, enforced here so you find out now rather than at the form. */
 const LIMITS = { title: 200, subtitle: 200, description: 4000, keywords: 7, keywordChars: 50 };
@@ -173,4 +176,24 @@ rsvg-convert -w 1600 -h 2560 cover.svg -o cover.jpg
 ${warnings.length ? `\n## ⚠ Warnings\n\n${warnings.map((w) => `- ${w}`).join("\n")}\n` : "\nNo validation warnings.\n"}`;
 
   return { markdown, warnings, royalty };
+}
+
+/**
+ * Writes the sheet into the book's own directory.
+ *
+ * Lives here rather than in the CLI because the review console generates books
+ * too, and a book delivered to your Drive without its upload sheet is a book
+ * you cannot publish without coming back to the machine.
+ *
+ * @returns {Promise<{file:string, warnings:string[]}>}
+ */
+export async function writeKdpPack(id) {
+  const state = await store.load();
+  const book = store.findBook(state, id);
+  if (!book) throw new Error(`No book ${id}`);
+
+  const pack = buildKdpPack({ book, epubName: book.epubFile });
+  const file = path.join(store.bookDir(id), "KDP-UPLOAD-SHEET.md");
+  await fs.writeFile(file, pack.markdown);
+  return { file, warnings: pack.warnings };
 }
