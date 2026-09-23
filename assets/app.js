@@ -1760,7 +1760,10 @@ function renderAnalytics() {
     { key: "gaps", label: "Distribution gaps", value: String(gapCount), jump: "gapsCard",
       note: gapCount ? "finished books not yet listed" : "every title is everywhere" },
     { key: "revenue", label: "Revenue recorded", value: formatMoney(revenue),
-      note: revenue ? "entered by hand" : "none entered yet" }
+      // Where the money came from matters as much as the figure: a total that
+      // says "entered by hand" when it came off a KDP report is a small lie
+      // that makes the whole page harder to trust.
+      note: revenue ? revenueSourceNote(books) : "none yet — import a report below" }
   ];
 
   $("analyticsMetrics").innerHTML = tiles.map(function (tile) {
@@ -1865,6 +1868,22 @@ function renderAnalytics() {
             "</tr>";
         }).join("")
     : emptyRow(6, "No titles yet.");
+}
+
+/** "from Amazon / KDP", "from 2 storefronts", or "entered by hand". */
+function revenueSourceNote(books) {
+  var sources = [];
+  books.forEach(function (book) {
+    (book.sales || []).forEach(function (row) {
+      if (row.currency !== "USD" || !row.amount) return;
+      var label = sourceLabel(row.source);
+      if (sources.indexOf(label) === -1) sources.push(label);
+    });
+  });
+
+  if (!sources.length) return "entered by hand";
+  if (sources.length === 1) return "imported from " + sources[0];
+  return "imported from " + sources.length + " storefronts";
 }
 
 function unitsSold(book) {
