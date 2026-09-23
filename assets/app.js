@@ -230,7 +230,8 @@ function seedState() {
     schedule: clone(DEFAULT_SCHEDULE),
     settings: clone(DEFAULT_SETTINGS),
     lastReport: null,
-    lastValidation: null
+    lastValidation: null,
+    gapTasks: Object.create(null)
   };
 }
 
@@ -675,8 +676,27 @@ function normaliseState(raw) {
     schedule: normaliseSchedule(raw.schedule),
     settings: Object.assign(clone(DEFAULT_SETTINGS), raw.settings || {}),
     lastReport: raw.lastReport || null,
-    lastValidation: raw.lastValidation || null
+    lastValidation: raw.lastValidation || null,
+    // Which gaps you have started work on. Keyed "bookId|storeId" because the
+    // unit of work is one title on one store, not a book.
+    gapTasks: normaliseGapTasks(raw.gapTasks, bookIds)
   };
+}
+
+function normaliseGapTasks(raw, bookIds) {
+  var out = Object.create(null);
+  if (!raw || typeof raw !== "object") return out;
+
+  Object.keys(raw).forEach(function (key) {
+    var parts = String(key).split("|");
+    if (parts.length !== 2) return;
+    if (!bookIds[parts[0]]) return;
+    if (!STORES.some(function (store) { return store.id === parts[1]; })) return;
+    if (raw[key] && raw[key].status === "doing") {
+      out[key] = { status: "doing", at: toInt(raw[key].at, Date.now()) };
+    }
+  });
+  return out;
 }
 
 var saveTimer = null;
@@ -702,6 +722,10 @@ function save() {
    --------------------------------------------------------- */
 
 var state = readStore() || seedState();
+
+// A state restored from an export written before gap tasks existed has no map
+// to read, and the checklist would throw on the first row rather than render.
+if (!state.gapTasks) state.gapTasks = Object.create(null);
 
 var ui = {
   page: "dashboard",
@@ -1814,24 +1838,7 @@ function renderAnalytics() {
       }).join("")
     : '<p class="muted small">No categories yet.</p>';
 
-  $("gapsTable").innerHTML = gaps.length
-    ? gaps.map(function (row) {
-        return "<tr>" +
-          "<td>" + escapeHTML(row.book.title) + "</td>" +
-          "<td>" + row.on.map(function (s) { return pill(s.label, "ok"); }).join(" ") + "</td>" +
-          "<td>" + row.missing.map(function (s) { return pill(s.label, "warn"); }).join(" ") + "</td>" +
-          '<td class="nowrap">' + (row.book.listPriceUsd ? formatMoney(row.book.listPriceUsd) : "—") +
-            (row.book.prices && row.book.prices.amazon && row.book.prices.amazon !== row.book.listPriceUsd
-              ? '<br><span class="small muted">' + formatMoney(row.book.prices.amazon) + " on Amazon</span>"
-              : "") + "</td>" +
-          "</tr>";
-      }).join("")
-    : emptyRow(
-        4,
-        live.length
-          ? "No gaps — every title on sale is listed on every store you use."
-          : "Nothing is marked on sale yet. Mark a title in the library and gaps will appear here.",
-      );
+  renderGapChecklist(gaps, usedStores, live);
 
   renderListingMatrix(books);
   renderPricing(books);
@@ -1909,6 +1916,214 @@ function revenueProvenance(book) {
 
   var periods = sales.map(function (row) { return row.period; }).filter(Boolean);
   return sources.join(", ") + (periods.length ? " · " + periods[0] : "");
+}
+
+/**
+ * The gaps, as work rather than as a report.
+ *
+ * A table told you ten books were missing from a store. It did not tell you
+ * which to do first, what it was worth, or let you tick one off - so the same
+ * ten rows sat there week after week looking identical whether you had done
+ * nine of them or none.
+ *
+ * One row is one job: this title, on this store. Ordered by what the job pays,
+ * because if you only ever do the top three, those should be the three worth
+ * the most.
+ */
+function gapTaskKey(bookId, storeId) { return bookId + "|" + storeId; }
+
+function renderGapChecklist(gaps, usedStores, live) {
+  var host = $("gapChecklist");
+  if (!host) return;
+
+  var tasks = [];
+  gaps.forEach(function (row) {
+    row.missing.forEach(function (store) {
+      var price = priceFor(row.book, store.id);
+      tasks.push({
+        book: row.book,
+        store: store,
+        price: price,
+        net: netPerSale(store.id, price).net,
+        key: gapTaskKey(row.book.id, store.id)
+      });
+    });
+  });
+
+  tasks.sort(function (a, b) { return b.net - a.net || a.book.title.localeCompare(b.book.title); });
+
+  // Progress is measured against what is actually achievable: every title on
+  // sale, on every store you already use.
+  var possible = live.length * usedStores.length;
+  var done = possible - tasks.length;
+
+  host.innerHTML = "";
+
+  var summary = document.createElement("div");
+  summary.className = "gap-summary";
+
+  var count = document.createElement("strong");
+  count.textContent = tasks.length
+    ? tasks.length + " listing" + (tasks.length === 1 ? "" : "s") + " to add"
+    : "Every title is on every store you use";
+  summary.appendChild(count);
+
+  if (tasks.length) {
+    var worth = tasks.reduce(function (sum, task) { return sum + task.net; }, 0);
+    var value = document.createElement("span");
+    value.className = "small muted";
+    value.textContent = "worth " + formatMoney(worth) + " per round of sales, on books you have already written";
+    summary.appendChild(value);
+  }
+
+  host.appendChild(summary);
+
+  if (possible > 0) {
+    var track = document.createElement("span");
+    track.className = "bars-track";
+    var fill = document.createElement("span");
+    fill.className = "bars-fill";
+    fill.style.width = Math.round((done / possible) * 100) + "%";
+    track.appendChild(fill);
+
+    var progress = document.createElement("p");
+    progress.className = "small muted";
+    progress.textContent = done + " of " + possible + " possible listings done";
+
+    host.appendChild(track);
+    host.appendChild(progress);
+  }
+
+  if (!tasks.length) return;
+
+  var list = document.createElement("ul");
+  list.className = "checklist";
+
+  tasks.forEach(function (task) {
+    list.appendChild(gapTaskRow(task));
+  });
+
+  host.appendChild(list);
+}
+
+function gapTaskRow(task) {
+  var item = document.createElement("li");
+  var doing = state.gapTasks[task.key] && state.gapTasks[task.key].status === "doing";
+  item.className = "checklist-item" + (doing ? " doing" : "");
+
+  var tick = document.createElement("button");
+  tick.type = "button";
+  tick.className = "tick";
+  tick.dataset.action = "mark-listed";
+  tick.dataset.id = task.book.id;
+  tick.dataset.store = task.store.id;
+  tick.setAttribute("aria-label", "Mark “" + task.book.title + "” as listed on " + task.store.label);
+  tick.title = "Mark as listed on " + task.store.label;
+  item.appendChild(tick);
+
+  var body = document.createElement("div");
+  body.className = "checklist-body";
+
+  var line = document.createElement("div");
+  var strong = document.createElement("strong");
+  strong.textContent = task.book.title;
+  line.appendChild(strong);
+  line.appendChild(document.createTextNode(" → "));
+  var store = document.createElement("span");
+  store.textContent = task.store.label;
+  line.appendChild(store);
+  body.appendChild(line);
+
+  var detail = document.createElement("div");
+  detail.className = "small muted";
+  detail.textContent = "List at " + formatMoney(task.price) + " · " +
+    Math.round(netPerSale(task.store.id, task.price).rate * 100) + "% royalty · " +
+    formatMoney(task.net) + " per sale" +
+    (task.store.id === "amazon" ? " · KDP review takes up to 72 hours" : "");
+  body.appendChild(detail);
+
+  item.appendChild(body);
+
+  var actions = document.createElement("div");
+  actions.className = "checklist-actions";
+
+  var working = document.createElement("button");
+  working.type = "button";
+  working.className = "btn tiny" + (doing ? " primary" : " ghost");
+  working.dataset.action = "toggle-gap-task";
+  working.dataset.key = task.key;
+  working.setAttribute("aria-pressed", doing ? "true" : "false");
+  working.textContent = doing ? "In progress" : "Start";
+  actions.appendChild(working);
+
+  item.appendChild(actions);
+  return item;
+}
+
+/**
+ * Ticking a gap off means the book IS on that store, so it writes through to
+ * the catalogue rather than keeping a private to-do state. The gap then
+ * disappears from this list because it is no longer a gap - which is the only
+ * honest way for a checklist over live data to work.
+ */
+function markListed(bookId, storeId) {
+  var book = findBook(bookId);
+  var store = STORES.filter(function (s) { return s.id === storeId; })[0];
+  if (!book || !store) return;
+
+  var url = prompt(
+    "Listing URL for “" + book.title + "” on " + store.label + "\n\n" +
+      "Leave it blank if the link is not to hand yet — the title is still marked as listed.\n" +
+      "Cancel to leave this one open.",
+    "",
+  );
+  if (url === null) return;
+
+  var trimmed = String(url).trim();
+
+  if (trimmed) {
+    if (!/^https?:\/\//i.test(trimmed)) {
+      toast("That does not look like a link — it needs to start with http.", "warn");
+      return;
+    }
+
+    // A Gumroad link pasted into the Amazon row is a mistake worth catching:
+    // it would record a listing on a store the book is not on.
+    var belongs = storeGuessFromUrl(trimmed);
+    if (belongs && belongs !== storeId) {
+      var other = STORES.filter(function (s) { return s.id === belongs; })[0];
+      var name = other ? other.label : belongs;
+      toast(
+        "That looks like " + (/^[aeiou]/i.test(name) ? "an" : "a") + " " + name +
+          " link, but this row is " + store.label + ".",
+        "warn",
+      );
+      return;
+    }
+
+    book.storefronts[storeId] = trimmed;
+  }
+
+  if ((book.liveOn || []).indexOf(storeId) < 0) book.liveOn = (book.liveOn || []).concat(storeId);
+  book.publishedAt = book.publishedAt || Date.now();
+  book.queued = false;
+  book.stage = "Publishing";
+  touch(book);
+
+  delete state.gapTasks[gapTaskKey(bookId, storeId)];
+
+  log("library", book.title + " listed on " + store.label + ".");
+  save();
+  render();
+  toast(book.title + " is now listed on " + store.label + ".", "ok");
+}
+
+function storeGuessFromUrl(url) {
+  var host = String(url).toLowerCase();
+  if (/amazon\.|amzn\.|kdp\./.test(host)) return "amazon";
+  if (/gumroad\./.test(host)) return "gumroad";
+  if (/play\.google\.|books\.google\./.test(host)) return "play";
+  return null;
 }
 
 /** Every title against every storefront, as a plain yes/no grid. */
@@ -3442,6 +3657,14 @@ var ACTIONS = {
   "delete-book": function (el) { deleteBook(el.dataset.id); },
   "toggle-queue": function (el) { toggleQueue(el.dataset.id); },
   "mark-live": function (el) { markLive(el.dataset.id); },
+  "mark-listed": function (el) { markListed(el.dataset.id, el.dataset.store); },
+  "toggle-gap-task": function (el) {
+    var key = el.dataset.key;
+    if (state.gapTasks[key]) delete state.gapTasks[key];
+    else state.gapTasks[key] = { status: "doing", at: Date.now() };
+    save();
+    renderAnalytics();
+  },
   "import-live": importLive,
   "advance-book": function (el) { advanceBook(el.dataset.id); },
   "resolve-issue": function (el) { resolveIssue(el.dataset.id, el.dataset.issue); },
