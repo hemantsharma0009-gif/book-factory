@@ -192,6 +192,16 @@ async function renderDetail(book) {
     <h3 style="margin-top:18px">Manuscript</h3>
     <div class="reader" id="reader" lang="${esc(book.language || "en")}"><p class="muted small">Loading…</p></div>
 
+    ${book.manuscriptEdited ? `
+      <div class="card section" style="border-color:var(--yellow)">
+        <h3 style="margin-top:0">You edited the text after this EPUB was built</h3>
+        <p class="small">
+          The file people would download still has the old wording. Rebuilding
+          reassembles it from your edited manuscript — no model call, nothing to pay.
+        </p>
+        <div class="actions"><button class="btn primary" data-act="rebuild">Rebuild the EPUB</button></div>
+      </div>` : ""}
+
     <div class="actions" style="margin-top:16px">
       ${book.status === "awaiting_approval" ? `
         <button class="btn success" data-act="approve">Approve</button>
@@ -202,6 +212,8 @@ async function renderDetail(book) {
       <a class="btn" href="/api/books/${esc(book.id)}/kdp" target="_blank" rel="noopener">KDP upload sheet</a>
       <a class="btn" href="/library/${esc(book.id)}/${esc(book.epubFile)}"
          download="${esc(book.epubFile)}">Download EPUB (${(book.epubBytes / 1024).toFixed(0)} KB)</a>
+      <a class="btn" href="/api/books/${esc(book.id)}/manuscript?download"
+         download="manuscript.md">Download the text to edit</a>
     </div>`;
 
   const md = await (await fetch(`/api/books/${book.id}/manuscript`)).text();
@@ -235,7 +247,11 @@ document.addEventListener("click", async (event) => {
   if (!action || !selected) return;
 
   try {
-    if (action === "approve") {
+    if (action === "rebuild") {
+      toast("Rebuilding…");
+      await api(`/api/books/${selected}/rebuild`, { method: "POST" });
+      toast("Rebuilt from your edited manuscript.", "ok");
+    } else if (action === "approve") {
       await api(`/api/books/${selected}/approve`, { method: "POST" });
       toast("Approved. It can now be published.", "ok");
     } else if (action === "reject") {

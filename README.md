@@ -178,6 +178,40 @@ Two things worth knowing:
   the failure is reported with the path the book is actually at, and
   `node src/cli.js deliver <bookId>` retries it.
 
+## Reading a finished book, and changing it before you publish
+
+The pipeline stops at `awaiting_approval` so a person reads the book. Reading
+it and wanting to change something is the normal case, so the edit has
+somewhere to go.
+
+**Read it, and take the text away:**
+
+```bash
+node src/server.js                        # review console, reads in the browser
+node src/cli.js share <bookId> --hours 2  # the same text on your phone
+```
+
+The console offers two downloads: the **EPUB**, which is what people would buy,
+and **the text to edit** — `manuscript.md`, which opens in any editor. The
+whole book folder also lands in your Drive if delivery is configured.
+
+**Change what you like, then:**
+
+```bash
+node src/cli.js rebuild <bookId>
+```
+
+The EPUB is reassembled from your edited manuscript, the upload sheet is
+refreshed to match, and the folder is re-delivered. **No model call, so it
+costs nothing** — it only rebuilds the file. Figures already on disk are
+re-attached rather than regenerated, so a rebuild cannot quietly change the
+pictures. Add or remove a chapter in the file and the book follows.
+
+**You cannot publish a book whose EPUB is behind its text.** `publish` compares
+the two timestamps and refuses, naming the rebuild command, because the failure
+it prevents is silent: shipping the version you meant to fix. The review
+console shows the same warning with a **Rebuild the EPUB** button.
+
 ## Reading the books themselves
 
 The dashboard holds no book text and never has — it tracks titles, not

@@ -18,6 +18,7 @@ import { CADENCES, nextRunAt } from "./scheduler.js";
 import { GENRES } from "./genres.js";
 import { DEFAULTS, LANGUAGES } from "./config.js";
 import { deliverBook } from "./deliver.js";
+import { rebuildBook, manuscriptIsNewer } from "./rebuild.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 4321);
@@ -55,8 +56,13 @@ let activeRun = null;
 const routes = {
   "GET /api/state": async (req, res) => {
     const state = await store.load();
+    const books = await Promise.all(state.books.map(async (book) => ({
+      ...book,
+      manuscriptEdited: book.epubFile ? await manuscriptIsNewer(book.id, book.epubFile) : false,
+    })));
+
     json(res, 200, {
-      books: state.books,
+      books,
       schedule: state.schedule,
       nextRunAt: nextRunAt(state.schedule, state.runs[0]?.at),
       cadences: CADENCES,
@@ -167,9 +173,15 @@ const routes = {
   },
 
   "GET /api/books/:id/manuscript": async (req, res, { id }) => {
+    const download = new URL(req.url, "http://localhost").searchParams.has("download");
     try {
       const md = await store.readArtifact(id, "manuscript.md");
-      res.writeHead(200, { "Content-Type": MIME[".md"] });
+      res.writeHead(200, {
+        "Content-Type": MIME[".md"],
+        // With ?download the browser saves it instead of rendering it, which
+        // is what you want when the next step is editing it.
+        ...(download ? { "Content-Disposition": `attachment; filename="manuscript.md"` } : {}),
+      });
       res.end(md);
     } catch {
       json(res, 404, { error: "No manuscript" });
@@ -183,6 +195,17 @@ const routes = {
     const pack = buildKdpPack({ book, epubName: book.epubFile });
     res.writeHead(200, { "Content-Type": MIME[".md"] });
     res.end(pack.markdown);
+  },
+
+  "POST /api/books/:id/rebuild": async (req, res, { id }) => {
+    try {
+      const result = await rebuildBook({ id });
+      await writeKdpPack(id);
+      await deliverBook({ id });
+      json(res, 200, { ok: true, result });
+    } catch (err) {
+      json(res, 400, { error: err.message });
+    }
   },
 
   "POST /api/schedule": async (req, res) => {
