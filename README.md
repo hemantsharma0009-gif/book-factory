@@ -178,6 +178,26 @@ Two things worth knowing:
   the failure is reported with the path the book is actually at, and
   `node src/cli.js deliver <bookId>` retries it.
 
+## Distribution gaps as a checklist
+
+The gaps table listed ten books missing from a store. It did not say which to
+do first, what each was worth, or let you tick one off — so the same ten rows
+sat there week after week looking identical whether you had done nine or none.
+
+Analytics now shows one row per **job**: this title, on this store, ordered by
+what the job pays. Each row carries the price to list at, the royalty rate that
+price earns there, and the net per sale — and an Amazon row says that KDP
+review takes up to 72 hours.
+
+Ticking a job off asks for the listing URL and marks the book as on sale at
+that store, so the job leaves the list because it is no longer a gap. Leave the
+URL blank if the link is not to hand yet; the listing is still recorded. Paste
+a link belonging to a different store and it is refused, because recording a
+listing on a store the book is not on is worse than recording nothing.
+
+"Start" marks a job in progress and survives a reload, so a KDP upload waiting
+on review is visibly different from one you have not begun.
+
 ## Real sales numbers, from the storefronts
 
 Until you import something, every figure on the Revenue table is one somebody

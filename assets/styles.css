@@ -617,6 +617,39 @@ button.bars-row:focus-visible .bars-fill { filter: brightness(1.18); }
 button.bars-row[aria-pressed="true"] { background: var(--panel-3); }
 button.bars-row[aria-pressed="true"] .bars-fill { background: var(--violet); }
 
+/* One gap = one job. Laid out as a row of work, not a row of data. */
+.gap-summary { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.gap-summary strong { font-size: 15px; }
+
+.checklist { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+
+.checklist-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 10px;
+  background: var(--panel-2);
+}
+.checklist-item.doing { border-color: var(--blue); }
+.checklist-body { flex: 1; min-width: 0; }
+.checklist-actions { flex-shrink: 0; }
+
+/* A 28px circle inside a 44px target: big enough for a thumb, quiet enough
+   not to shout over the title beside it. */
+.tick {
+  flex-shrink: 0; width: 28px; height: 28px; padding: 0; margin: 8px;
+  border: 2px solid var(--muted); border-radius: 999px;
+  background: transparent; cursor: pointer; position: relative;
+  transition: border-color .15s ease, background .15s ease;
+}
+.tick::after {
+  content: ""; position: absolute; inset: -8px;   /* the real hit target */
+}
+.tick:hover, .tick:focus-visible { border-color: var(--green); background: color-mix(in srgb, var(--green) 18%, transparent); }
+
+@media (max-width: 620px) {
+  .checklist-item { flex-wrap: wrap; }
+  .checklist-actions { width: 100%; padding-left: 52px; }
+}
+
 .flash { animation: flash 1.2s ease; }
 @keyframes flash {
   0%, 100% { box-shadow: none; }
