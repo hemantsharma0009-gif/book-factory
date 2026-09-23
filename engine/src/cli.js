@@ -14,6 +14,7 @@
  *   pack <bookId>                 write the KDP upload sheet
  *   deliver [bookId]              copy a book to BOOK_FACTORY_DELIVER_TO (your
  *                                 Drive folder). New books deliver themselves.
+ *   export-dashboard [--out f]    write the catalogue as JSON for the dashboard
  *   share <bookId> [--hours n] [--insecure]
  *                                 serve this one book read-only on your LAN over
  *                                 HTTPS, so you can read it on a phone before
@@ -29,9 +30,10 @@ import { buildKdpPack, writeKdpPack } from "./publish/kdp.js";
 import { publishToGumroad, listGumroadProducts } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt, isDue, shouldRun } from "./scheduler.js";
 import { GENRES } from "./genres.js";
-import { DEFAULTS, LANGUAGES } from "./config.js";
+import { DEFAULTS, LANGUAGES, paths } from "./config.js";
 import { createShareServer, mintLink, lanAddresses, makeCertificate } from "./share.js";
 import { deliverBook, deliverTarget, likelyDriveFolders } from "./deliver.js";
+import { buildDashboardExport } from "./dashboard-export.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -323,6 +325,15 @@ trust, and never with the port forwarded to the internet.`);
       break;
     }
 
+    case "export-dashboard": {
+      const payload = await buildDashboardExport();
+      const out = String(flag("out", path.join(paths().data, "dashboard.json")));
+      await fs.writeFile(out, JSON.stringify(payload, null, 2));
+      log(`Wrote ${payload.books.length} book(s) to ${out}`);
+      log(`\nOpen the dashboard, go to Settings, and choose "Import library JSON".`);
+      break;
+    }
+
     case "languages": {
       for (const l of Object.values(LANGUAGES)) {
         log(`  ${l.code.padEnd(3)} ${l.name.padEnd(12)} ${l.endonym}`);
@@ -367,6 +378,7 @@ trust, and never with the port forwarded to the internet.`);
   languages                       list the languages a book can be written in
   share <id> [--hours n]          read it on your phone before approving
   deliver [id]                    copy a book to your Drive folder (no id: set-up help)
+  export-dashboard [--out file]   write the catalogue for the dashboard to import
   approve <id> | reject <id> [reason]
   pack <id>                       write the KDP upload sheet
   publish <id> --gumroad [--dry-run]

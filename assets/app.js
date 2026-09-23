@@ -428,6 +428,10 @@ function normaliseBook(raw, index) {
     listPriceUsd: Math.max(0, toNum(book.listPriceUsd, 0)) || null,
     prices: normalisePrices(book.prices),
     productionCostUsd: Math.max(0, toNum(book.productionCostUsd, 0)) || null,
+    // Imported storefront rows. Carried explicitly for the same reason as the
+    // fields above: this function rebuilds a book from a fixed list, so an
+    // omission here would silently discard every import on the next reload.
+    sales: normaliseSales(book.sales),
     generated: book.generated === true,
     issues: Array.isArray(book.issues) ? book.issues.filter(Boolean).map(function (issue) {
       return {
@@ -1830,9 +1834,18 @@ function renderAnalytics() {
   renderPricing(books);
   renderDrill();
 
-  $("revenueNote").textContent = revenue
-    ? "Recorded per book in the editor. Gumroad figures can be pulled with `node src/cli.js gumroad-list`; Amazon and Google publish no sales API, so those stay manual."
-    : "No revenue recorded yet. Enter it per book in the editor, or pull Gumroad figures with `node src/cli.js gumroad-list`. Amazon and Google publish no sales API, so those stay manual.";
+  var others = otherCurrencyTotals(books);
+  var otherCodes = Object.keys(others);
+
+  $("revenueNote").textContent = (revenue
+    ? "Figures with a storefront beside them came from a report you imported; the rest were typed by hand. " +
+      "Amazon and Google publish no sales API, so those two stay a file you export."
+    : "No revenue yet. Amazon and Google publish no sales API, so import a report above; " +
+      "Gumroad can be pulled with `node src/cli.js gumroad-list`, or enter figures by hand in the editor.") +
+    (otherCodes.length
+      ? " Not included, because the dashboard totals USD: " +
+        otherCodes.map(function (code) { return others[code].toFixed(2) + " " + code; }).join(", ") + "."
+      : "");
 
   var sellable = live.length ? live : books;
 
@@ -1846,10 +1859,37 @@ function renderAnalytics() {
             "<td>" + escapeHTML(book.title) + "</td>" +
             '<td class="small muted">' + (stores.length ? escapeHTML(stores.map(function (s) { return s.label; }).join(", ")) : "not on sale") + "</td>" +
             '<td class="nowrap">' + (book.listPriceUsd ? formatMoney(book.listPriceUsd) : "—") + "</td>" +
+            '<td class="nowrap">' + (unitsSold(book) || '<span class="muted">—</span>') + "</td>" +
             '<td class="nowrap">' + (book.revenue ? formatMoney(book.revenue) : '<span class="muted">—</span>') + "</td>" +
+            '<td class="small muted">' + escapeHTML(revenueProvenance(book)) + "</td>" +
             "</tr>";
         }).join("")
-    : emptyRow(4, "No titles yet.");
+    : emptyRow(6, "No titles yet.");
+}
+
+function unitsSold(book) {
+  return (book.sales || []).reduce(function (sum, row) { return sum + row.units; }, 0);
+}
+
+/**
+ * Where a revenue figure came from.
+ *
+ * The difference between "Amazon said so" and "somebody typed it" is the whole
+ * point of the import, and a number with no provenance is the reason the page
+ * could not be trusted before.
+ */
+function revenueProvenance(book) {
+  var sales = book.sales || [];
+  if (!sales.length) return book.revenue ? "entered by hand" : "—";
+
+  var sources = [];
+  sales.forEach(function (row) {
+    var label = sourceLabel(row.source);
+    if (sources.indexOf(label) === -1) sources.push(label);
+  });
+
+  var periods = sales.map(function (row) { return row.period; }).filter(Boolean);
+  return sources.join(", ") + (periods.length ? " · " + periods[0] : "");
 }
 
 /** Every title against every storefront, as a plain yes/no grid. */
@@ -2112,6 +2152,360 @@ function drillColumns(drill) {
         return b.listPriceUsd ? formatMoney(b.listPriceUsd) : "—";
       } },
   ];
+}
+
+/**
+ * Imported sales.
+ *
+ * A row is one storefront's word on one title for one period. Keeping the rows
+ * rather than only a total is what makes an import repeatable: re-importing
+ * August replaces August instead of adding it twice, and you can see which
+ * number came from where.
+ */
+function normaliseSales(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(Boolean).map(function (row) {
+    return {
+      source: String(row.source || "other"),
+      period: String(row.period || ""),
+      units: toInt(row.units, 0),
+      amount: toNum(row.amount, 0),
+      currency: String(row.currency || "USD").toUpperCase().slice(0, 3),
+      at: toInt(row.at, Date.now())
+    };
+  });
+}
+
+/**
+ * The dashboard reports in USD. Adding 1,240 INR to 18 GBP would produce a
+ * number that is not money in any currency, so only USD rows count towards
+ * revenue - and renderSalesSummary says plainly what was left out.
+ */
+function usdRevenue(book) {
+  return (book.sales || []).reduce(function (sum, row) {
+    return row.currency === "USD" ? sum + row.amount : sum;
+  }, 0);
+}
+
+function otherCurrencyTotals(books) {
+  var totals = Object.create(null);
+  books.forEach(function (book) {
+    (book.sales || []).forEach(function (row) {
+      if (row.currency === "USD") return;
+      totals[row.currency] = (totals[row.currency] || 0) + row.amount;
+    });
+  });
+  return totals;
+}
+
+/**
+ * Folds parsed report rows into the catalogue.
+ *
+ * Rows from the same storefront and period replace what was there before, so
+ * importing the same file twice is a no-op rather than a doubling. Anything
+ * that matches no book is returned rather than dropped - a title the dashboard
+ * has never heard of is the most interesting thing in the file.
+ */
+function applySalesRows(rows, source) {
+  var matched = [];
+  var unmatched = [];
+  var now = Date.now();
+
+  rows.forEach(function (row) {
+    var book = window.BookFactorySales.matchTitle(row.title, state.books);
+    if (!book) { unmatched.push(row); return; }
+
+    book.sales = (book.sales || []).filter(function (existing) {
+      return !(existing.source === source && existing.period === row.period && existing.currency === row.currency);
+    });
+    book.sales.push({
+      source: source,
+      period: row.period,
+      units: row.units,
+      amount: row.amount,
+      currency: row.currency,
+      at: now
+    });
+
+    book.revenue = Math.max(0, usdRevenue(book));
+    book.updatedAt = now;
+    matched.push({ row: row, book: book });
+  });
+
+  return { matched: matched, unmatched: unmatched };
+}
+
+/**
+ * The import preview.
+ *
+ * Nothing is written until you have seen what would change. A silent import is
+ * how a dashboard starts lying: one mis-detected column and every figure on
+ * the page is wrong, with no sign that anything happened.
+ *
+ * Titles come from an external file, so every one is written with textContent.
+ */
+var pendingImport = null;
+
+function previewSalesFile(file) {
+  var host = $("salesPreview");
+  if (!host) return;
+
+  var reader = new FileReader();
+  reader.onerror = function () { showImportError("That file could not be read."); };
+  reader.onload = function () {
+    var parsed;
+    try {
+      parsed = window.BookFactorySales.parseReport(String(reader.result || ""));
+    } catch (err) {
+      showImportError("That file could not be parsed (" + err.message + ").");
+      return;
+    }
+
+    if (parsed.error) {
+      showImportError(parsed.error, parsed.header);
+      return;
+    }
+
+    pendingImport = parsed;
+    renderImportPreview(file.name, parsed);
+  };
+  reader.readAsText(file);
+}
+
+function showImportError(message, header) {
+  var host = $("salesPreview");
+  pendingImport = null;
+  host.innerHTML = "";
+
+  var box = document.createElement("div");
+  box.className = "drill";
+
+  var line = document.createElement("p");
+  line.className = "small";
+  line.textContent = message;
+  box.appendChild(line);
+
+  if (header && header.length) {
+    var seen = document.createElement("p");
+    seen.className = "small muted";
+    seen.textContent = "Columns found: " + header.filter(Boolean).join(" · ");
+    box.appendChild(seen);
+  }
+
+  var help = document.createElement("p");
+  help.className = "small muted";
+  help.textContent =
+    "The file needs a column of book titles and a column of units or royalties. " +
+    "If your download is a spreadsheet, open it and save as CSV first.";
+  box.appendChild(help);
+
+  host.appendChild(box);
+  host.hidden = false;
+}
+
+function renderImportPreview(fileName, parsed) {
+  var host = $("salesPreview");
+  host.innerHTML = "";
+  host.hidden = false;
+
+  var matches = parsed.rows.map(function (row) {
+    return { row: row, book: window.BookFactorySales.matchTitle(row.title, state.books) };
+  });
+  var unmatched = matches.filter(function (m) { return !m.book; });
+
+  var box = document.createElement("div");
+  box.className = "drill";
+
+  var head = document.createElement("div");
+  head.className = "drill-head";
+  var strong = document.createElement("strong");
+  strong.textContent = fileName + " — " + parsed.rows.length + " row" + (parsed.rows.length === 1 ? "" : "s") +
+    " from " + sourceLabel(parsed.source);
+  head.appendChild(strong);
+  box.appendChild(head);
+
+  // What the parser decided each column meant. If it guessed wrong, this is
+  // where you see it - before anything is written.
+  var storePick = document.createElement("label");
+  storePick.className = "field";
+  storePick.style.maxWidth = "320px";
+  var storeLabel = document.createElement("span");
+  storeLabel.textContent = "Storefront this report came from";
+  storePick.appendChild(storeLabel);
+
+  var select = document.createElement("select");
+  select.className = "input";
+  select.id = "salesSource";
+  [["amazon", "Amazon / KDP"], ["play", "Google Play Books"], ["gumroad", "Gumroad"], ["other", "Other"]]
+    .forEach(function (pair) {
+      var option = document.createElement("option");
+      option.value = pair[0];
+      option.textContent = pair[1];
+      if (pair[0] === parsed.source) option.selected = true;
+      select.appendChild(option);
+    });
+  storePick.appendChild(select);
+  box.appendChild(storePick);
+
+  // Re-importing a period replaces it. Say so, with the count, because the
+  // alternative reading - that it adds - would mean doubled revenue.
+  var replacing = countReplacedRows(parsed, parsed.source);
+  var replaceNote = document.createElement("p");
+  replaceNote.className = "small muted";
+  replaceNote.id = "salesReplaceNote";
+  replaceNote.textContent = describeReplacement(replacing);
+  box.appendChild(replaceNote);
+
+  select.addEventListener("change", function () {
+    $("salesReplaceNote").textContent = describeReplacement(countReplacedRows(parsed, select.value));
+  });
+
+  var mapping = document.createElement("p");
+  mapping.className = "small muted";
+  mapping.textContent = "Reading: " + ["title", "units", "amount", "currency", "period"]
+    .filter(function (field) { return parsed.columns[field] !== undefined; })
+    .map(function (field) { return field + " = \u201c" + parsed.header[parsed.columns[field]] + "\u201d"; })
+    .join(" · ");
+  box.appendChild(mapping);
+
+  var table = document.createElement("table");
+  table.className = "table";
+  table.appendChild(rowOf(["Title in the report", "Matches", "Units", "Amount"], "th"));
+
+  var body = document.createElement("tbody");
+  matches.forEach(function (m) {
+    var tr = document.createElement("tr");
+    tr.appendChild(cell(m.row.title));
+    tr.appendChild(cell(m.book ? m.book.title : "no match — will be skipped"));
+    tr.appendChild(cell(String(m.row.units)));
+    tr.appendChild(cell(formatAmount(m.row.amount, m.row.currency)));
+    if (!m.book) tr.className = "muted";
+    body.appendChild(tr);
+  });
+  table.appendChild(body);
+
+  var wrap = document.createElement("div");
+  wrap.className = "table-wrap";
+  wrap.appendChild(table);
+  box.appendChild(wrap);
+
+  var codes = Object.keys(parsed.currencies || {});
+  if (codes.length > 1) {
+    var note = document.createElement("p");
+    note.className = "small";
+    note.textContent = "This report pays in " + codes.join(", ") +
+      ". Only the USD rows count towards revenue — the rest are recorded but not added, " +
+      "because totalling different currencies would produce a number that is not money.";
+    box.appendChild(note);
+  }
+
+  if (unmatched.length) {
+    var miss = document.createElement("p");
+    miss.className = "small";
+    miss.textContent = unmatched.length + " title" + (unmatched.length === 1 ? "" : "s") +
+      " in the report match nothing in your catalogue and will be skipped. " +
+      "If they are yours, rename the book here to match the storefront.";
+    box.appendChild(miss);
+  }
+
+  var actions = document.createElement("div");
+  actions.className = "actions";
+
+  var confirm = document.createElement("button");
+  confirm.type = "button";
+  confirm.className = "btn primary";
+  confirm.dataset.action = "apply-sales-import";
+  confirm.textContent = "Import " + (parsed.rows.length - unmatched.length) + " title" +
+    (parsed.rows.length - unmatched.length === 1 ? "" : "s");
+  confirm.disabled = parsed.rows.length === unmatched.length;
+  actions.appendChild(confirm);
+
+  var cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "btn ghost";
+  cancel.dataset.action = "cancel-sales-import";
+  cancel.textContent = "Cancel";
+  actions.appendChild(cancel);
+
+  box.appendChild(actions);
+  host.appendChild(box);
+}
+
+/**
+ * How many already-imported rows this file would overwrite.
+ *
+ * Same storefront, same period, same currency means the same sales being
+ * restated - so they are replaced. Anything else is new money and is added.
+ */
+function countReplacedRows(parsed, source) {
+  var count = 0;
+  parsed.rows.forEach(function (row) {
+    var book = window.BookFactorySales.matchTitle(row.title, state.books);
+    if (!book) return;
+    (book.sales || []).forEach(function (existing) {
+      if (existing.source === source && existing.period === row.period && existing.currency === row.currency) count++;
+    });
+  });
+  return count;
+}
+
+function describeReplacement(count) {
+  return count
+    ? count + " row(s) already imported for this storefront and period will be replaced, not added."
+    : "Nothing here has been imported before — these will be added.";
+}
+
+function rowOf(labels, tag) {
+  var thead = document.createElement("thead");
+  var tr = document.createElement("tr");
+  labels.forEach(function (label) {
+    var el = document.createElement(tag || "td");
+    el.textContent = label;
+    tr.appendChild(el);
+  });
+  thead.appendChild(tr);
+  return thead;
+}
+
+function cell(text) {
+  var td = document.createElement("td");
+  td.textContent = text;
+  return td;
+}
+
+function formatAmount(amount, currency) {
+  var value = Math.round(amount * 100) / 100;
+  return currency === "USD" ? formatMoney(value) : value.toFixed(2) + " " + currency;
+}
+
+function sourceLabel(source) {
+  if (source === "amazon") return "Amazon / KDP";
+  if (source === "play") return "Google Play Books";
+  if (source === "gumroad") return "Gumroad";
+  return "an unrecognised storefront";
+}
+
+function commitSalesImport() {
+  if (!pendingImport) return;
+
+  // The storefront the person confirmed, not the one the parser guessed.
+  var picker = $("salesSource");
+  var source = picker ? picker.value : pendingImport.source;
+  var result = applySalesRows(pendingImport.rows, source);
+  pendingImport = null;
+
+  save();
+  render();
+
+  $("salesPreview").hidden = true;
+  $("salesPreview").innerHTML = "";
+
+  log(
+    "import",
+    "Imported " + result.matched.length + " title(s) from " + sourceLabel(source) +
+      (result.unmatched.length ? ", skipped " + result.unmatched.length + " unmatched" : ""),
+  );
+  toast("Imported " + result.matched.length + " title(s).", "ok");
 }
 
 /** Shared by the gaps table and the gaps drill, so they cannot disagree. */
@@ -2897,12 +3291,75 @@ function exportData() {
   toast("Library exported.", "ok");
 }
 
+/**
+ * Folding the engine's books into the catalogue.
+ *
+ * A factory export must MERGE, never replace. Importing it used to run through
+ * the same path as a library restore, which would have thrown away the eleven
+ * titles this catalogue exists to track in exchange for whatever the engine
+ * happened to hold.
+ *
+ * The engine owns what only it knows - that a book was generated, and what it
+ * cost to make. Everything a person could have edited here wins.
+ */
+function mergeFactoryBooks(incoming) {
+  var added = 0;
+  var updated = 0;
+
+  incoming.forEach(function (raw) {
+    var fresh = normaliseBook(raw, state.books.length);
+    var existing = window.BookFactorySales.matchTitle(fresh.title, state.books);
+
+    if (!existing) {
+      state.books.unshift(fresh);
+      added++;
+      return;
+    }
+
+    existing.productionCostUsd = fresh.productionCostUsd || existing.productionCostUsd;
+    existing.generated = true;
+    existing.description = existing.description || fresh.description;
+    existing.listPriceUsd = existing.listPriceUsd || fresh.listPriceUsd;
+
+    // A store link the engine has and this catalogue does not is new news; one
+    // the catalogue already has was put there by a person and stays.
+    STORES.forEach(function (store) {
+      if (!existing.storefronts[store.id] && fresh.storefronts[store.id]) {
+        existing.storefronts[store.id] = fresh.storefronts[store.id];
+      }
+    });
+    fresh.liveOn.forEach(function (id) {
+      if (existing.liveOn.indexOf(id) === -1) existing.liveOn.push(id);
+    });
+
+    existing.updatedAt = Date.now();
+    updated++;
+  });
+
+  return { added: added, updated: updated };
+}
+
 function importData(file) {
   var reader = new FileReader();
 
   reader.onload = function () {
     try {
       var parsed = JSON.parse(String(reader.result));
+
+      // A factory export is a different thing from a library backup: it is a
+      // slice of the catalogue, not the whole of it.
+      if (parsed && parsed.kind === "book-factory-export") {
+        if (!Array.isArray(parsed.books) || !parsed.books.length) {
+          throw new Error("That export contains no books.");
+        }
+        var result = mergeFactoryBooks(parsed.books);
+        log("system", "Factory import: " + result.added + " added, " + result.updated + " updated.");
+        save();
+        render();
+        toast(result.added + " book(s) added, " + result.updated + " updated.", "ok");
+        return;
+      }
+
       var incoming = parsed && parsed.state ? parsed.state : parsed;
       var next = normaliseState(Array.isArray(incoming) ? { books: incoming } : incoming);
 
@@ -2978,6 +3435,13 @@ var ACTIONS = {
   "release": releasePackages,
   "export": exportData,
   "import": function () { $("importFile").click(); },
+  "pick-sales-file": function () { $("salesFile").click(); },
+  "apply-sales-import": commitSalesImport,
+  "cancel-sales-import": function () {
+    pendingImport = null;
+    $("salesPreview").hidden = true;
+    $("salesPreview").innerHTML = "";
+  },
   "reset": resetData,
   "close-modal": closeModal,
   "dismiss-catalogue-banner": function () {
@@ -3127,6 +3591,12 @@ $("scheduleForm").addEventListener("submit", function (event) {
 
 $("importFile").addEventListener("change", function () {
   if (this.files && this.files[0]) importData(this.files[0]);
+  this.value = "";
+});
+
+$("salesFile").addEventListener("change", function () {
+  if (this.files && this.files[0]) previewSalesFile(this.files[0]);
+  // Cleared so choosing the same file twice still fires a change event.
   this.value = "";
 });
 

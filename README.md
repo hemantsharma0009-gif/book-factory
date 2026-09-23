@@ -177,3 +177,51 @@ Two things worth knowing:
 - **A failed delivery never costs you the book.** The copy is the last step,
   the failure is reported with the path the book is actually at, and
   `node src/cli.js deliver <bookId>` retries it.
+
+## Real sales numbers, from the storefronts
+
+Until you import something, every figure on the Revenue table is one somebody
+typed. The import turns that into something a storefront said.
+
+**Analytics → Import sales from a storefront.** Choose a report you exported
+from KDP, Play Books Partner Center, or Gumroad. Nothing is written until you
+have seen a preview of exactly what would change:
+
+- which column it read as the title, the units and the money
+- which storefront it thinks the report came from — **correctable**, and it
+  decides whether a re-import replaces a period or adds to it
+- every title that matches nothing in your catalogue, listed rather than
+  silently skipped
+- how many previously imported rows would be replaced
+
+Save the download as **CSV** first if it arrives as a spreadsheet.
+
+Three things it is careful about, because a revenue figure that quietly
+inflates is worse than no figure at all:
+
+- **Refunds subtract.** A KDP report's `Net Units Sold` is preferred over
+  `Units Sold`, and negative money parses as negative.
+- **Currencies are never added together.** 1,240 INR plus 18 GBP is not 1,258
+  of anything. Only USD rows count towards revenue; the rest are recorded and
+  named under the table.
+- **Re-importing a period replaces it.** Importing August twice leaves August's
+  figures where they were rather than doubling them.
+
+Why a file and not an API: Amazon publishes no API for KDP authors at all, and
+Google Play Books offers report downloads rather than a per-title feed. Gumroad
+does have a real API — `node src/cli.js gumroad-list`.
+
+## Putting the factory's books on the dashboard
+
+```bash
+node src/cli.js export-dashboard
+```
+
+Writes `dashboard.json`. In the dashboard: **Settings → Import library JSON**.
+
+It merges: books the catalogue has not seen are added, ones it already has are
+updated with what only the engine knows — that the book was generated, and what
+it cost to produce, which is what the break-even column is measured against.
+Anything a person edited here wins, and importing the same export twice changes
+nothing the second time. The file carries no keys, no tokens and no manuscript,
+so it is safe to leave in a Drive folder.
