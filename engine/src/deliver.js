@@ -33,7 +33,7 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as store from "./store.js";
-import { breakEven } from "./economics.js";
+import { breakEven, DELIVERY_FEE_PER_MB } from "./economics.js";
 
 const run = promisify(execFile);
 
@@ -75,6 +75,10 @@ export function folderNameFor(book) {
 function summaryFor(book) {
   const price = book.prices?.amazon || book.listing?.priceUsd;
   const inBand = price >= 2.99 && price <= 9.99;
+  // Delivery is charged on the file Amazon delivers, so break-even quoted
+  // here has to be the same number the CLI and the console quote.
+  const fileMb = (book.epubBytes || 0) / (1024 * 1024);
+  const deliveryUsd = inBand ? fileMb * DELIVERY_FEE_PER_MB : 0;
 
   return `${book.title}
 ${book.subtitle || ""}
@@ -85,12 +89,24 @@ Status: ${String(book.status || "unknown").replace(/_/g, " ")}
   Genre      ${book.genreName || book.genre || "—"}
   Language   ${book.languageName || book.language || "English"}
   Length     ${(book.wordCount || 0).toLocaleString()} words in ${book.chapterCount || 0} chapters
+  Pictures   ${
+    book.imagesGenerated
+      ? `${book.figureCount || 0} AI-generated, plus the cover. Declare images to KDP as well as text.`
+      : book.figureCount
+        ? `${book.figureCount} generated chart(s) - not AI artwork`
+        : "none"
+  }
   Price      ${price ? `$${Number(price).toFixed(2)}` : "—"}${
     price ? `  (Amazon royalty ${inBand ? "70%" : "35%"}${inBand ? "" : " - outside the $2.99-$9.99 band"})` : ""
   }
+  Size       ${fileMb.toFixed(1)} MB${
+    deliveryUsd >= 0.2
+      ? `  (Amazon deducts about $${deliveryUsd.toFixed(2)} per sale in delivery fees\n             on the 70% option - every sale, for as long as it is listed)`
+      : ""
+  }
   Cost       ${book.cost?.usd != null ? `$${book.cost.usd.toFixed(2)} to produce` : "—"}${
     book.cost?.usd
-      ? `\n  Breaks even${breakEven({ costUsd: book.cost.usd, listPriceUsd: price })
+      ? `\n  Breaks even${breakEven({ costUsd: book.cost.usd, listPriceUsd: price, fileMb })
           .filter((r) => r.net > 0)
           .map((r) => `\n    ${r.label.padEnd(20)} ${r.copies} cop${r.copies === 1 ? "y" : "ies"} at $${r.net.toFixed(2)}/sale`)
           .join("")}`
@@ -101,10 +117,18 @@ WHAT IS IN HERE
 
   *.epub                 the book. Upload this to KDP, and to Gumroad.
   KDP-UPLOAD-SHEET.md    every field the KDP form asks for, in its order.
-  cover.svg              the cover. KDP needs a raster - convert to
-                         1600x2560 JPEG before uploading.
+  cover.svg              the cover, title included. KDP needs a raster -
+                         convert to 1600x2560 JPEG before uploading.
   manuscript.md          the text on its own, for reading or editing.
-  plan.json              the outline the book was written from.
+  plan.json              the outline the book was written from.${
+    book.imagesGenerated
+      ? `
+  figures/               the artwork, one file per illustrated chapter.
+  cover-art.png          the cover picture WITHOUT the title. Do not upload
+                         this one - upload cover.svg, which has the title.
+  art.json               what each picture was briefed to be.`
+      : ""
+  }
 
 NOTHING IS PUBLISHED YET
 

@@ -35,6 +35,44 @@ A sample plans the *whole* book and writes the opening chapters against that
 full plan, so what you read is what the real run would produce. It does not
 consume a genre slot, so you can write the same book properly afterwards.
 
+## Watching a book being written
+
+`--live` streams the book chapter by chapter instead of submitting one batch.
+Each chapter is written to `library/books/<id>/chapters/ch-007.md` the moment it
+finishes, which is what makes everything else possible:
+
+```bash
+node src/cli.js generate --live --images artwork
+#   [██████████··············] 42%  Writing chapters — 5 of 12 done, 11,204 words  $0.31
+```
+
+From another terminal, or from the console:
+
+```bash
+node src/cli.js pause  bk_abc123     # stops after the chapter it is writing
+node src/cli.js runs                 # what is unfinished, and how to resume it
+node src/cli.js resume bk_abc123     # carries on; nothing is paid for twice
+```
+
+Pausing takes effect at a chapter boundary rather than mid-sentence, because
+abandoning a half-written chapter means paying for the tokens and throwing the
+words away.
+
+**While it is paused you can edit.** Open a chapter in the console, or edit
+`chapters/ch-003.md` in any editor. A chapter whose text no longer matches what
+the engine wrote is marked as yours, and the editorial pass **skips it** — an
+editor handed your paragraph would rewrite it, and silently discarding an edit
+someone made on purpose is not a trade this pipeline gets to make.
+
+The console shows a progress bar with a **download button beside it**. It serves
+a real EPUB of whatever exists at that second — openable on a phone, labelled
+inside the file as a draft so it cannot be mistaken for the finished book once
+it has been forwarded to somebody.
+
+Every step is resumable: the plan, the art direction, each chapter and each
+generated image are on disk as they are produced. Losing power at chapter eleven
+costs you the chapter that was in flight and nothing else.
+
 ## What it costs
 
 Chapters are drafted through the **Batch API at 50% off**, and shared context —
@@ -51,6 +89,17 @@ same words. Caching makes that affordable: ~$0.09 of input per book instead of
 
 Change the model with `BOOK_FACTORY_MODEL=claude-opus-5` (better prose, ~3× the
 cost).
+
+**Live mode costs about twice batch mode**, and that is the whole trade:
+
+| | Price | What you can do while it runs |
+|---|---|---|
+| batch (default in the CLI) | half | nothing — no partial result exists until the batch ends |
+| `--live` (default in the console) | full | read each chapter as it lands, pause, edit, download, resume |
+
+Before a real run the CLI prints an estimated range and, above $1, asks. It
+never asks when nothing is attached to the terminal — a question in cron would
+hang forever holding the run lock.
 
 ## The two storefronts work differently
 
@@ -72,7 +121,14 @@ Two KDP rules the sheet enforces for you:
 ## Commands
 
 ```
-generate [--genre id] [--chapters n] [--words n] [--images charts|none] [--dry-run]
+generate [--genre id] [--chapters n] [--words n] [--dry-run]
+         [--images none|charts|placeholder|artwork] [--image-every n]
+         [--image-driver google|openai|custom|placeholder]
+         [--live] [--no-edit] [--sample n]
+runs                             unfinished books, and how to resume each
+resume <id>                      carry on; nothing already written is repaid for
+pause <id> | stop <id>           from another terminal, while it runs
+images                           which image providers are configured
 status | show <id> | genres
 approve <id> | reject <id> [reason]
 pack <id>                        write the KDP upload sheet
@@ -134,26 +190,110 @@ tests.
 
 ## Images
 
-`--images charts` (the default) generates SVG figures in plain JS: no API key, no
-cost. They are built for the medium — most Kindles are greyscale e-ink, so series
-are separated by a **lightness ramp** rather than hue, every mark carries a direct
-label (a printed page has no hover), and every figure is followed by a data table.
+Four choices, and the honest position first: **the Claude API does not generate
+images.** Nothing in this engine can make that untrue. Real artwork needs a
+second vendor, a second key and a second bill.
 
-`stock` (public-domain) and `aigen` (AI illustration) are declared with the same
-interface and throw a clear "not implemented" error. Implement `generate()` in
-`src/illustrate/index.js` to add them; nothing else changes. Note that AI images
-must also be disclosed to KDP.
+| `--images` | What you get | Cost |
+|---|---|---|
+| `none` | no pictures | — |
+| `charts` | SVG charts and diagrams, generated in plain JS | free, no key |
+| `placeholder` | real PNGs made offline | free, no key |
+| `artwork` | generated photography, one per chapter, plus cover art | per image, billed by the image provider |
+
+`charts` is built for the medium: most Kindles are greyscale e-ink, so series are
+separated by a **lightness ramp** rather than hue, every mark carries a direct
+label (a printed page has no hover), and every figure is followed by a data
+table. It is right for a data-led non-fiction book and useless for a novel.
+
+`placeholder` exists so you can lay an illustrated book out — see where pictures
+fall, what they do to the file size, how the cover reads at thumbnail size —
+**before paying for any of them**.
+
+### Artwork
+
+```bash
+node src/cli.js images                 # which providers you have configured
+node src/cli.js generate --images artwork --image-every 2
+```
+
+Set one key in `engine/.env`:
+
+```
+GOOGLE_API_KEY=…        # or GEMINI_API_KEY
+OPENAI_API_KEY=…
+BOOK_FACTORY_IMAGE_CONFIG=/path/to/provider.json   # anything else
+```
+
+A run with `--images artwork` and no key **fails before the first token is
+spent**, not after twelve chapters have been written and paid for.
+
+The art direction is deliberate and lives in `src/illustrate/art.js`:
+
+- **One look per book.** A house style and a palette are chosen once and
+  prepended to every prompt. Without that you get twelve unrelated stock
+  photographs instead of an illustrated book.
+- **Photographic, not painterly.** The prompts name optics — focal length,
+  light, depth of field, grade — because "make it realistic" gets you an
+  airbrushed illustration and "50mm, window light, shallow depth of field" gets
+  you a photograph. Fiction is briefed as cinematic; non-fiction as editorial.
+- **Never text inside a picture.** Image models still render lettering as
+  convincing nonsense, and a garbled word printed in a book you are selling is a
+  defect a reader will photograph. Captions are typeset by the EPUB, where they
+  are real text a screen reader can read.
+- **Never a real person, logo or brand.** The upside of a recognisable face is
+  nil and the downside is a takedown.
+
+The **cover** is generated artwork with the title typeset over it as vector
+text — never lettering drawn by the image model, which is the only way to be
+sure the title is spelled correctly. `cover.svg` is the one to upload;
+`cover-art.png` is the same picture without the title.
+
+Bytes coming back from a provider are checked to be a real PNG or JPEG before
+they go anywhere near a book. One picture failing drops that picture and says
+so; it never takes down a run whose prose you have already paid for.
+
+**KDP asks about AI text and AI images separately.** A book built with
+`--images artwork` records a disclosure covering both, and the upload sheet says
+so where you will be answering the question.
+
+### Cost, and the part that surprises people
+
+`BOOK_FACTORY_IMAGE_COST` sets the per-image figure used in estimates (default
+`0.04`). Set it to what your provider actually charges — the engine has no way
+to know.
+
+**The bigger cost is not making the pictures, it is delivering them.** Amazon
+deducts a per-megabyte delivery fee from the 70% royalty option, on every sale,
+for as long as the book is listed. Text is tiny; twelve photographs are not.
+
+| File | Royalty at $9.99 | Delivery | Net per sale |
+|---|---|---|---|
+| 0.3 MB, text only | $6.99 | $0.05 | **$6.95** |
+| 12 MB, illustrated | $6.99 | $1.80 | **$5.19** |
+| 30 MB | $6.99 | $4.50 | **$2.49** — the 35% option, which has no delivery fee, pays more |
+
+So interior figures are requested at 1K rather than 2K (`BOOK_FACTORY_IMAGE_SIZE`)
+— already more than an e-ink page can show — while the cover, the one image
+Amazon displays at full size, stays at 2K. `--image-every 2` halves the rest.
+
+The fee differs by marketplace and Amazon changes it, so `$0.15/MB` is a default,
+not a fact: set `BOOK_FACTORY_DELIVERY_FEE` to the rate on your own dashboard.
+Break-even, the upload sheet and the note delivered to Drive all use the same
+figure, so they cannot disagree.
 
 ## Layout
 
 ```
 src/config.js          models, pricing, paths, defaults
 src/genres.js          rotation (least-recently-used, with tests)
-src/model.js           the only module that calls the API; batching + caching
-src/agents/            planner, writer, editor, marketer
-src/illustrate/        chart generation; stock/aigen adapters
+src/model.js           the only module that calls the API; batching, caching, streaming
+src/run-state.js       the durable run record: progress, pause, resume
+src/chapters.js        one file per chapter, written as each one lands
+src/agents/            planner, writer, editor, marketer, art director
+src/illustrate/        charts, art direction, image drivers, a PNG writer
 src/epub.js            EPUB3 assembler
-src/cover.js           SVG cover
+src/cover.js           SVG cover, typographic or over generated artwork
 src/pipeline.js        orchestration — always stops at awaiting_approval
 src/publish/gumroad.js live publishing
 src/publish/kdp.js     upload sheet + KDP rule validation
@@ -163,7 +303,8 @@ src/server.js          review console (loopback only)
 ## Tests
 
 ```bash
-npm test                                   # 12 unit tests
+npm test                                   # 126 unit tests
+node test/console-ui.mjs                   # the progress panel, in a real browser
 node test/validate-epub.mjs <file.epub>    # structural EPUB validation
 ```
 

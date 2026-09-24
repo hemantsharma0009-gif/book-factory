@@ -14,7 +14,8 @@
     "start": "node src/server.js",
     "generate": "node src/cli.js generate",
     "status": "node src/cli.js status",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:console": "node test/console-ui.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.127.0",

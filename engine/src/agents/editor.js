@@ -20,7 +20,7 @@
  *    below - the later chapter always defers to the earlier one - resolves
  *    every such case identically from either side, with no coordination.
  */
-import { batchProse } from "../model.js";
+import { batchProse, streamProse } from "../model.js";
 import { buildBible } from "./planner.js";
 
 /**
@@ -127,4 +127,95 @@ ${chapter.number} will give way to this one, so do not pre-emptively cut for the
   }));
 }
 
-export const __test = { buildManuscript, buildWindow, EDIT_INSTRUCTION, MAX_MANUSCRIPT_CHARS };
+
+/**
+ * Editorial pass, streamed one chapter at a time.
+ *
+ * Same prompts and the same deduplication rule as the batch path. The cached
+ * prefix stays pinned to the DRAFTED manuscript and is never rebuilt between
+ * chapters: rebuilding it after each edit would change the prefix byte for
+ * byte, miss the cache on every request, and quietly multiply the cost of the
+ * pass - and it would also break the dedup rule, which is only coherent if
+ * every editor sees the same text.
+ *
+ * `skip` holds chapters you edited by hand. They are not sent at all. An
+ * editor handed your paragraph would rewrite it, and silently discarding an
+ * edit someone made on purpose is not a trade this pass gets to make.
+ */
+export async function editChaptersLive({
+  plan,
+  genre,
+  chapters,
+  language,
+  skip = new Set(),
+  log = () => {},
+  shouldStop = () => null,
+  onChapterStart = () => {},
+  onDelta = () => {},
+  onChapter = async () => {},
+  signal,
+}) {
+  const bible = buildBible(plan, genre, language);
+  const manuscript = buildManuscript(chapters);
+  const windowed = manuscript.length > MAX_MANUSCRIPT_CHARS;
+
+  if (windowed) {
+    log(
+      `  manuscript is ${Math.round(manuscript.length / 1000)}k characters; ` +
+        `editing against a ±${WINDOW}-chapter window instead of the whole book`,
+    );
+  }
+
+  const sharedPrefix = windowed
+    ? `${bible}\n\n${EDIT_INSTRUCTION}`
+    : `${bible}\n\n--- FULL MANUSCRIPT ---\n\n${manuscript}\n\n--- END MANUSCRIPT ---\n\n${EDIT_INSTRUCTION}`;
+
+  const out = [];
+  let stopped = null;
+
+  for (const chapter of chapters) {
+    if (skip.has(chapter.number)) {
+      log(`  chapter ${chapter.number}: kept as you edited it, not sent to the editor`);
+      out.push(chapter);
+      continue;
+    }
+
+    const stop = await shouldStop();
+    if (stop) {
+      stopped = stop;
+      // Everything not yet edited stays as drafted. A half-edited book is
+      // still a readable book; a book missing chapters is not.
+      out.push(...chapters.slice(out.length));
+      break;
+    }
+
+    onChapterStart(chapter);
+
+    const edited = await streamProse({
+      system: sharedPrefix,
+      prompt: windowed
+        ? `--- SURROUNDING CHAPTERS ---\n\n${buildWindow(chapters, chapter.number)}\n\n--- END ---\n\n${editPointer(chapter)}`
+        : editPointer(chapter),
+      signal,
+      onDelta: (fragment) => onDelta({ chapter, fragment }),
+    });
+
+    const record = { ...chapter, body: edited.trim() || chapter.body, edited: true };
+    out.push(record);
+    await onChapter(record);
+  }
+
+  return { chapters: out, stopped };
+}
+
+function editPointer(chapter) {
+  return `Edit chapter ${chapter.number}, "${chapter.title}".
+
+It is delimited by ${marker(chapter.number, "START")} and ${marker(chapter.number, "END")}.
+
+Remember the deduplication rule: chapters numbered below ${chapter.number} keep
+any shared material; this chapter gives way to them. Chapters numbered above
+${chapter.number} will give way to this one, so do not pre-emptively cut for them.`;
+}
+
+export const __test = { buildManuscript, buildWindow, EDIT_INSTRUCTION, MAX_MANUSCRIPT_CHARS, editPointer };

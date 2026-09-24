@@ -11,12 +11,21 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as store from "./store.js";
-import { produceBook } from "./pipeline.js";
+import {
+  produceBook,
+  resumeBook,
+  buildDraftEpub,
+  buildDraftMarkdown,
+  saveChapterEdit,
+} from "./pipeline.js";
+import * as runState from "./run-state.js";
+import { readChapter } from "./chapters.js";
+import { describeImageSetup, assertUsable, providers as imageProviders } from "./illustrate/index.js";
 import { buildKdpPack, writeKdpPack } from "./publish/kdp.js";
 import { publishToGumroad } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt } from "./scheduler.js";
 import { GENRES } from "./genres.js";
-import { DEFAULTS, LANGUAGES } from "./config.js";
+import { DEFAULTS, LANGUAGES, paths } from "./config.js";
 import { deliverBook } from "./deliver.js";
 import { rebuildBook, manuscriptIsNewer } from "./rebuild.js";
 import { economicsFor } from "./economics.js";
@@ -51,8 +60,58 @@ async function readBody(req) {
   }
 }
 
-/** Tracks an in-flight generation so the UI can show progress. */
-let activeRun = null;
+/**
+ * The book this server is currently working on.
+ *
+ * Only the id is held here. Everything the progress panel shows is read from
+ * `run.json` on each poll, so a run started from the CLI in another terminal
+ * shows up in the console too, and a console restart mid-book loses nothing.
+ */
+let activeBookId = null;
+
+/** Everything that happens after a book is finished, from either entry point. */
+async function afterBook(book) {
+  await writeKdpPack(book.id);
+  await deliverBook({ id: book.id, log: () => {} });
+}
+
+/**
+ * A run that has a book id but no live process here - started from the CLI,
+ * or left behind by a restart - is still shown, so the progress bar and the
+ * download button work wherever the run was started.
+ */
+async function currentRun() {
+  if (activeBookId) {
+    const run = await runState.readRun(activeBookId);
+    if (run) return runState.publicView(run);
+  }
+  // Nothing in memory: look for an unfinished book on disk. You can pause a
+  // run, close the laptop and come back tomorrow, and the console still has to
+  // offer you the Resume button and the part-written book.
+  const found = await findUnfinishedRun();
+  if (found) {
+    activeBookId = found.bookId;
+    return runState.publicView(found);
+  }
+  return null;
+}
+
+async function findUnfinishedRun() {
+  let names;
+  try {
+    names = await fs.readdir(paths().books);
+  } catch {
+    return null;
+  }
+
+  let newest = null;
+  for (const name of names) {
+    const run = await runState.readRun(name);
+    if (!run || run.status === "done") continue;
+    if (!newest || run.updatedAt > newest.updatedAt) newest = run;
+  }
+  return newest;
+}
 
 const routes = {
   "GET /api/state": async (req, res) => {
@@ -72,44 +131,172 @@ const routes = {
       languages: Object.values(LANGUAGES),
       genreHistory: state.genreHistory.slice(0, 12),
       runs: state.runs.slice(0, 20),
-      activeRun,
+      activeRun: await currentRun(),
+      imageProviders: Object.values(imageProviders).map((p) => ({
+        id: p.id,
+        label: p.label,
+        requiresKey: Boolean(p.requiresKey),
+        costPerImage: p.costPerImage || 0,
+      })),
+      imageSetup: describeImageSetup(),
     });
   },
 
   "POST /api/generate": async (req, res) => {
-    if (activeRun) return json(res, 409, { error: "A generation is already running." });
+    const running = await currentRun();
+    if (running && !runState.TERMINAL.has(running.status)) {
+      return json(res, 409, { error: "A generation is already running." });
+    }
+
     const body = await readBody(req);
     if (body.dryRun) process.env.BOOK_FACTORY_DRY_RUN = "1";
 
-    activeRun = { startedAt: Date.now(), lines: [], done: false };
-    json(res, 202, { started: true });
-
-    produceBook({
+    const options = {
       genreId: body.genre || null,
       chapters: Number(body.chapters) || 12,
       wordsPerChapter: Number(body.words) || 2200,
       images: body.images || "charts",
+      imageDriver: body.imageDriver || null,
+      imageEvery: Number(body.imageEvery) || 1,
       author: body.author || "Book Factory Studio",
       language: body.language || DEFAULTS.language,
-      log: (line) => activeRun.lines.push({ at: Date.now(), line }),
-    })
-      .then(async (book) => {
-        // Same promise as the CLI: a book made here also lands in your Drive,
-        // and the upload sheet is written first so it travels with it.
-        await writeKdpPack(book.id);
-        await deliverBook({
-          id: book.id,
-          log: (line) => activeRun.lines.push({ at: Date.now(), line }),
+      // Live is the default from the console, because the console is where
+      // somebody is watching: a batch run shows nothing until it ends and
+      // cannot be paused, which is the opposite of what this screen is for.
+      mode: body.mode === "batch" ? "batch" : "live",
+      editorial: body.editorial !== false,
+    };
+
+    // Anything that can fail before a token is spent - an unknown genre, an
+    // image provider with no key - should fail HERE, in the response to the
+    // click, not silently inside a background promise.
+    try {
+      assertUsable(options.images, options.imageDriver);
+    } catch (err) {
+      return json(res, 400, { error: err.message });
+    }
+
+    const ready = new Promise((resolve) => {
+      produceBook({ ...options, onStart: resolve, log: () => {} })
+        .then(async (book) => {
+          if (book?.id) await afterBook(book);
+        })
+        .catch((err) => {
+          // The run record already carries the failure. Swallowing it here
+          // only stops an unhandled rejection taking the console down.
+          process.emitWarning(`generate: ${err.message}`);
+          resolve(null);
         });
-        activeRun = { ...activeRun, done: true, bookId: book.id, finishedAt: Date.now() };
+    });
+
+    activeBookId = await ready;
+    json(res, 202, { started: true, bookId: activeBookId });
+  },
+
+  "GET /api/runs/:id": async (req, res, { id }) => {
+    const run = await runState.readRun(id);
+    if (!run) return json(res, 404, { error: "No such run" });
+    json(res, 200, runState.publicView(run));
+  },
+
+  "POST /api/runs/:id/pause": async (req, res, { id }) => {
+    const run = await runState.readRun(id);
+    if (!run) return json(res, 404, { error: "No such run" });
+    if (runState.TERMINAL.has(run.status) || run.status === "paused") {
+      return json(res, 400, { error: `This run is ${run.status}.` });
+    }
+    await runState.patchRun(id, (r) => {
+      r.pauseRequested = true;
+      runState.appendLog(r, "Pause requested — finishing the current chapter first.");
+    });
+    await runState.settle(id);
+    json(res, 200, runState.publicView(await runState.readRun(id)));
+  },
+
+  "POST /api/runs/:id/stop": async (req, res, { id }) => {
+    const run = await runState.readRun(id);
+    if (!run) return json(res, 404, { error: "No such run" });
+    await runState.patchRun(id, (r) => {
+      r.cancelRequested = true;
+      runState.appendLog(r, "Stop requested. What is already written is kept.");
+    });
+    await runState.settle(id);
+    json(res, 200, runState.publicView(await runState.readRun(id)));
+  },
+
+  "POST /api/runs/:id/resume": async (req, res, { id }) => {
+    const run = await runState.readRun(id);
+    if (!run) return json(res, 404, { error: "No such run" });
+    if (run.status === "done") return json(res, 400, { error: "This book is finished." });
+
+    const running = await currentRun();
+    if (running && running.bookId !== id && !runState.TERMINAL.has(running.status)) {
+      return json(res, 409, { error: "Another generation is running." });
+    }
+
+    activeBookId = id;
+    resumeBook({ bookId: id, log: () => {} })
+      .then(async (book) => {
+        if (book?.id) await afterBook(book);
       })
-      .catch((err) => {
-        activeRun = { ...activeRun, done: true, error: err.message, finishedAt: Date.now() };
-      })
-      .finally(() => {
-        // Keep the last run visible for a minute, then clear it.
-        setTimeout(() => { activeRun = null; }, 60_000).unref?.();
+      .catch((err) => process.emitWarning(`resume: ${err.message}`));
+
+    json(res, 202, { resumed: true, bookId: id });
+  },
+
+  "GET /api/runs/:id/draft.epub": async (req, res, { id }) => {
+    try {
+      const draft = await buildDraftEpub({ bookId: id });
+      res.writeHead(200, {
+        "Content-Type": MIME[".epub"],
+        "Content-Length": draft.epub.length,
+        "Content-Disposition": `attachment; filename="${draft.filename}"`,
+        // A draft changes every time a chapter lands, so it must never be
+        // served from a cache.
+        "Cache-Control": "no-store",
       });
+      res.end(draft.epub);
+    } catch (err) {
+      json(res, 409, { error: err.message });
+    }
+  },
+
+  "GET /api/runs/:id/draft.md": async (req, res, { id }) => {
+    try {
+      const draft = await buildDraftMarkdown({ bookId: id });
+      res.writeHead(200, {
+        "Content-Type": MIME[".md"],
+        "Content-Disposition": `attachment; filename="draft-${id}.md"`,
+        "Cache-Control": "no-store",
+      });
+      res.end(draft.markdown);
+    } catch (err) {
+      json(res, 409, { error: err.message });
+    }
+  },
+
+  "GET /api/runs/:id/chapters/:n": async (req, res, { id, n }) => {
+    const chapter = await readChapter(id, Number(n));
+    if (!chapter) return json(res, 404, { error: "Not written yet" });
+    json(res, 200, chapter);
+  },
+
+  "POST /api/runs/:id/chapters/:n": async (req, res, { id, n }) => {
+    const body = await readBody(req);
+    if (typeof body.body !== "string" || !body.body.trim()) {
+      return json(res, 400, { error: "Nothing to save." });
+    }
+    try {
+      const result = await saveChapterEdit({
+        bookId: id,
+        number: Number(n),
+        body: body.body,
+        title: body.title,
+      });
+      json(res, 200, result);
+    } catch (err) {
+      json(res, 400, { error: err.message });
+    }
   },
 
   "POST /api/books/:id/approve": async (req, res, { id }) => {
@@ -232,17 +419,24 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const pathname = url.pathname;
 
-  // Route table with a single :id parameter.
+  // Route table. `:name` segments become named parameters, so a route can
+  // address a chapter inside a book without a second lookup.
   for (const [pattern, handler] of Object.entries(routes)) {
     const [method, template] = pattern.split(" ");
     if (req.method !== method) continue;
 
-    const regex = new RegExp(`^${template.replace(/:id/, "([^/]+)")}$`);
-    const match = pathname.match(regex);
+    const names = [];
+    const source = template.replace(/:([A-Za-z]+)/g, (_, name) => {
+      names.push(name);
+      return "([^/]+)";
+    });
+    const match = pathname.match(new RegExp(`^${source}$`));
     if (!match) continue;
 
+    const params = Object.fromEntries(names.map((name, i) => [name, decodeURIComponent(match[i + 1])]));
+
     try {
-      return await handler(req, res, { id: match[1] });
+      return await handler(req, res, params);
     } catch (err) {
       return json(res, 500, { error: err.message });
     }

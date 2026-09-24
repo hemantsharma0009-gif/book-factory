@@ -85,7 +85,8 @@ table.figure-data th[scope="row"] { text-align: left; }
 .title-page h1 { font-size: 2.2em; text-align: center; }
 .title-page .subtitle { font-size: 1.1em; font-style: italic; color: #444; }
 .title-page .author { margin-top: 3em; font-size: 1em; letter-spacing: 0.1em; }
-.front-note { font-size: 0.85em; color: #555; margin-top: 4em; }`;
+.front-note { font-size: 0.85em; color: #555; margin-top: 4em; }
+.draft-banner { font-size: 0.9em; letter-spacing: 0.12em; text-transform: uppercase; color: #8a4b00; border: 2px solid #8a4b00; padding: 0.5em; margin-bottom: 2em; text-align: center; }`;
 
 /**
  * `lang` is not decoration: a reading system picks hyphenation, line breaking,
@@ -178,11 +179,19 @@ export async function buildEpub(book) {
     spine.push('<itemref idref="cover" linear="yes"/>');
   }
 
+  // A draft download is labelled inside the file, not just in its filename.
+  // Filenames get lost the moment the file is forwarded or synced; a reader
+  // opening this on a phone has to be able to tell it is unfinished.
+  const draftNotice = book.draft
+    ? `<p class="draft-banner">${esc(book.draft)}</p>`
+    : "";
+
   oebps.file(
     "title.xhtml",
     xhtml(
       book.title,
       `<div class="title-page">
+${draftNotice}
 <h1>${esc(book.title)}</h1>
 ${book.subtitle ? `<p class="subtitle">${esc(book.subtitle)}</p>` : ""}
 <p class="author">${esc(book.author)}</p>
@@ -206,9 +215,13 @@ ${book.aiDisclosure ? `<p class="front-note">${esc(book.aiDisclosure)}</p>` : ""
       manifest.push(
         `<item id="${figure.id}" href="${figure.filename}" media-type="${figure.mediaType}"/>`,
       );
+      // alt is what a screen reader announces; the caption is what a sighted
+      // reader sees. They are different jobs, so they are different strings -
+      // a caption repeated as alt text tells a blind reader nothing new.
+      const caption = figure.caption || figure.alt;
       const figureHtml = `<figure>
 <img src="${figure.filename}" alt="${esc(figure.alt)}"/>
-<figcaption>${esc(figure.alt)}</figcaption>
+${caption ? `<figcaption>${esc(caption)}</figcaption>` : ""}
 ${figure.table || ""}
 </figure>`;
       // Insert before the second <h2> if there is one, else append.
