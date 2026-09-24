@@ -19,6 +19,7 @@ import { GENRES } from "./genres.js";
 import { DEFAULTS, LANGUAGES } from "./config.js";
 import { deliverBook } from "./deliver.js";
 import { rebuildBook, manuscriptIsNewer } from "./rebuild.js";
+import { economicsFor } from "./economics.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 4321);
@@ -59,6 +60,7 @@ const routes = {
     const books = await Promise.all(state.books.map(async (book) => ({
       ...book,
       manuscriptEdited: book.epubFile ? await manuscriptIsNewer(book.id, book.epubFile) : false,
+      economics: economicsFor({ book, runs: state.runs }),
     })));
 
     json(res, 200, {

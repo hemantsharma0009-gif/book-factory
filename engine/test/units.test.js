@@ -18,6 +18,9 @@ import { __test as __editor } from "../src/agents/editor.js";
 import { mintLink, revokeLink, createShareServer, makeCertificate, __test as __share } from "../src/share.js";
 import { deliverBook, safeName, folderNameFor } from "../src/deliver.js";
 import { parseManuscript, rebuildBook, manuscriptIsNewer } from "../src/rebuild.js";
+import * as __model from "../src/model.js";
+import { ROYALTY } from "../src/royalty.js";
+import { breakEven, spentRecently, estimateRun, economicsFor } from "../src/economics.js";
 
 test("genre rotation never repeats within the cooldown window", () => {
   const history = [];
@@ -1064,3 +1067,177 @@ async function rebuildFixture() {
 
   return { dir, bookId };
 }
+
+test("cached tokens are priced, not counted as free", () => {
+  // The bug this covers: cache reads were tallied but never charged, and
+  // cache writes were not read from the usage at all - so the editorial
+  // pass, which caches the whole manuscript, reported $0.00.
+  __model.spend.usd = 0;
+  __model.spend.cacheReadTokens = 0;
+  __model.spend.cacheWriteTokens = 0;
+
+  __model.__test.recordUsage({
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 1_000_000,
+    cache_read_input_tokens: 1_000_000,
+  });
+
+  // Sonnet 5 input is $2/MTok: a megatoken written (1.25x) plus a megatoken
+  // read (0.1x) is $2.50 + $0.20.
+  assert.equal(Number(__model.spend.usd.toFixed(4)), 2.7);
+  assert.equal(__model.spend.cacheWriteTokens, 1_000_000);
+  assert.equal(__model.spend.cacheReadTokens, 1_000_000);
+});
+
+test("a one-hour cache entry costs more than a five-minute one", () => {
+  __model.spend.usd = 0;
+  __model.__test.recordUsage({
+    input_tokens: 0, output_tokens: 0,
+    cache_creation_input_tokens: 1_000_000,
+    cache_creation: { ephemeral_1h_input_tokens: 1_000_000, ephemeral_5m_input_tokens: 0 },
+  });
+  assert.equal(Number(__model.spend.usd.toFixed(4)), 4);   // 2x of $2
+});
+
+test("a write with no breakdown is priced at the cheaper rate, not the dearer", () => {
+  // Guessing the one-hour rate would overstate every run this engine makes,
+  // since it only ever asks for the default five-minute entry.
+  __model.spend.usd = 0;
+  __model.__test.recordUsage({
+    input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 1_000_000,
+  });
+  assert.equal(Number(__model.spend.usd.toFixed(4)), 2.5);  // 1.25x, not 2x
+});
+
+test("the batch discount applies to cached tokens too", () => {
+  __model.spend.usd = 0;
+  __model.__test.recordUsage(
+    { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 1_000_000 },
+    { batch: true },
+  );
+  assert.equal(Number(__model.spend.usd.toFixed(4)), 0.1);  // $0.20 halved
+});
+
+test("ordinary input and output are still priced as before", () => {
+  // The fix must not have moved the numbers that were already right.
+  __model.spend.usd = 0;
+  __model.__test.recordUsage({ input_tokens: 1_000_000, output_tokens: 1_000_000 });
+  assert.equal(Number(__model.spend.usd.toFixed(4)), 12);   // $2 in + $10 out
+});
+
+test("a book that caches its manuscript no longer reports as free", () => {
+  // The shape of a real editorial pass: one big cache write, then a read of
+  // the same prefix per chapter. Before the fix this whole thing was $0.00.
+  __model.spend.usd = 0;
+  __model.__test.recordUsage(
+    { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 100_000 },
+    { batch: true },
+  );
+  for (let chapter = 0; chapter < 12; chapter++) {
+    __model.__test.recordUsage(
+      { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 100_000 },
+      { batch: true },
+    );
+  }
+  assert.ok(__model.spend.usd > 0.1, `reported ${__model.spend.usd}, which is still near zero`);
+});
+
+test("the engine's royalty table matches the dashboard's", async () => {
+  // The dashboard is a static page with no build step, so it cannot import
+  // src/royalty.js - the table is duplicated. Two copies that disagree would
+  // have the engine quoting one royalty and the page another for the same
+  // book, and nothing would notice. This is what notices.
+  const appJs = await fs.readFile(new URL("../../assets/app.js", import.meta.url), "utf8");
+  const block = appJs.slice(appJs.indexOf("var ROYALTY = {"), appJs.indexOf("};", appJs.indexOf("var ROYALTY = {")));
+
+  for (const [storeId, rule] of Object.entries(ROYALTY)) {
+    const line = block.split("\n").find((l) => l.trim().startsWith(`${storeId}:`));
+    assert.ok(line, `the dashboard has no royalty rule for ${storeId}`);
+
+    for (const field of ["rate", "lowRate", "bandLow"]) {
+      const match = line.match(new RegExp(`${field}:\\s*([0-9.]+)`));
+      assert.ok(match, `${storeId}.${field} missing from the dashboard`);
+      assert.equal(Number(match[1]), rule[field], `${storeId}.${field} drifted apart`);
+    }
+
+    const high = line.match(/bandHigh:\s*([0-9.]+|Infinity)/);
+    assert.equal(high[1] === "Infinity" ? Infinity : Number(high[1]), rule.bandHigh,
+      `${storeId}.bandHigh drifted apart`);
+  }
+});
+
+test("break-even is quoted at the price the handoff sheet tells you to use", () => {
+  // A $16.99 book would earn 35% on Amazon. The sheet tells you to list it at
+  // $9.99, so quoting the 35% figure would be advice against our own advice.
+  const rows = breakEven({ costUsd: 5, listPriceUsd: 16.99 });
+  const amazon = rows.find((r) => r.store === "amazon");
+  assert.equal(amazon.price, 9.99);
+  assert.equal(amazon.rate, 0.7);
+
+  const gumroad = rows.find((r) => r.store === "gumroad");
+  assert.equal(gumroad.price, 16.99, "Gumroad has no band and should keep the list price");
+});
+
+test("break-even rounds up, because half a sale is not a sale", () => {
+  const rows = breakEven({ costUsd: 10, listPriceUsd: 9.99 });
+  const amazon = rows.find((r) => r.store === "amazon");
+  assert.equal(amazon.net, 9.99 * 0.7);
+  assert.equal(amazon.copies, 2, "10 / 6.99 is 1.43, which is 2 copies");
+});
+
+test("a free book has nothing to recover, and an unsellable one says so", () => {
+  const free = breakEven({ costUsd: 0, listPriceUsd: 9.99 });
+  assert.ok(free.every((r) => r.copies === 0));
+
+  // No price means no net per sale, and "0 copies" there would be a lie.
+  assert.deepEqual(breakEven({ costUsd: 5, listPriceUsd: 0 }), []);
+});
+
+test("the monthly total counts only recent runs", () => {
+  const now = Date.now();
+  const runs = [
+    { at: now - 1 * 86400000, cost: { usd: 0.5 } },
+    { at: now - 29 * 86400000, cost: { usd: 0.25 } },
+    { at: now - 40 * 86400000, cost: { usd: 99 } },   // outside the window
+    { at: now - 2 * 86400000 },                        // a run with no cost recorded
+  ];
+  const month = spentRecently(runs, 30);
+  assert.equal(Number(month.usd.toFixed(2)), 0.75);
+  assert.equal(month.books, 3);
+});
+
+test("the estimate scales with the work asked for", () => {
+  const price = { input: 2, output: 10 };
+  const two = estimateRun({ chapters: 2, wordsPerChapter: 2200, price });
+  const twelve = estimateRun({ chapters: 12, wordsPerChapter: 2200, price });
+
+  assert.ok(twelve.mid > two.mid * 3, "a six-times-longer book should cost far more");
+  assert.ok(two.low < two.mid && two.mid < two.high, "the estimate should be a range");
+});
+
+test("the estimate halves under the batch discount", () => {
+  const price = { input: 2, output: 10 };
+  const batched = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, batch: true });
+  const realtime = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, batch: false });
+  assert.equal(Number((realtime.mid / batched.mid).toFixed(2)), 2);
+});
+
+test("the estimate accounts for the cached manuscript the editor reads", () => {
+  // Skipping the editorial pass removes both its output and the cache traffic
+  // that made the old accounting wrong; the estimate should notice.
+  const price = { input: 2, output: 10 };
+  const withEdit = estimateRun({ chapters: 12, wordsPerChapter: 2200, price });
+  const without = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, editorial: false });
+  assert.ok(withEdit.mid > without.mid * 1.5, "the editorial pass is most of the bill");
+});
+
+test("a book that cost nothing gets no break-even row", () => {
+  // "Breaks even at 0 copies" is noise dressed up as information.
+  const free = economicsFor({ book: { cost: { usd: 0 }, listing: { priceUsd: 9.99 } }, runs: [] });
+  assert.deepEqual(free.stores, []);
+
+  const paid = economicsFor({ book: { cost: { usd: 0.62 }, listing: { priceUsd: 9.99 } }, runs: [] });
+  assert.ok(paid.stores.length > 0);
+  assert.equal(paid.stores.find((s) => s.store === "amazon").copies, 1);
+});

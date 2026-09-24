@@ -33,6 +33,7 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as store from "./store.js";
+import { breakEven } from "./economics.js";
 
 const run = promisify(execFile);
 
@@ -87,7 +88,14 @@ Status: ${String(book.status || "unknown").replace(/_/g, " ")}
   Price      ${price ? `$${Number(price).toFixed(2)}` : "—"}${
     price ? `  (Amazon royalty ${inBand ? "70%" : "35%"}${inBand ? "" : " - outside the $2.99-$9.99 band"})` : ""
   }
-  Cost       ${book.cost?.usd != null ? `$${book.cost.usd.toFixed(2)} to produce` : "—"}
+  Cost       ${book.cost?.usd != null ? `$${book.cost.usd.toFixed(2)} to produce` : "—"}${
+    book.cost?.usd
+      ? `\n  Breaks even${breakEven({ costUsd: book.cost.usd, listPriceUsd: price })
+          .filter((r) => r.net > 0)
+          .map((r) => `\n    ${r.label.padEnd(20)} ${r.copies} cop${r.copies === 1 ? "y" : "ies"} at $${r.net.toFixed(2)}/sale`)
+          .join("")}`
+      : ""
+  }
 
 WHAT IS IN HERE
 
