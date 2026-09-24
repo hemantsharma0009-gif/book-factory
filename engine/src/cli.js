@@ -11,6 +11,8 @@
  *   approve <bookId>
  *   reject <bookId> [reason]
  *   publish <bookId> [--gumroad] [--dry-run]
+ *   rebuild <bookId>              reassemble the EPUB from an edited
+ *                                 manuscript.md - no model call, no cost
  *   pack <bookId>                 write the KDP upload sheet
  *   deliver [bookId]              copy a book to BOOK_FACTORY_DELIVER_TO (your
  *                                 Drive folder). New books deliver themselves.
@@ -34,6 +36,7 @@ import { DEFAULTS, LANGUAGES, paths } from "./config.js";
 import { createShareServer, mintLink, lanAddresses, makeCertificate } from "./share.js";
 import { deliverBook, deliverTarget, likelyDriveFolders } from "./deliver.js";
 import { buildDashboardExport } from "./dashboard-export.js";
+import { rebuildBook, manuscriptIsNewer } from "./rebuild.js";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -149,6 +152,15 @@ async function main() {
       if (book.status !== "approved") {
         throw new Error(
           `Book ${id} is "${book.status}". Publishing requires your explicit approval first: node src/cli.js approve ${id}`,
+        );
+      }
+
+      if (await manuscriptIsNewer(id, book.epubFile)) {
+        throw new Error(
+          `manuscript.md was edited after ${book.epubFile} was built, so the EPUB does not ` +
+            `contain your changes.\n\n` +
+            `  node src/cli.js rebuild ${id}\n\n` +
+            `Then publish. (This costs nothing - it only reassembles the file.)`,
         );
       }
 
@@ -325,6 +337,17 @@ trust, and never with the port forwarded to the internet.`);
       break;
     }
 
+    case "rebuild": {
+      const id = args[1];
+      const result = await rebuildBook({ id, log });
+      await writePack(id);
+      await deliverBook({ id, log });
+      log(`\nRebuilt ${result.epubFile} — ${(result.epubBytes / 1024).toFixed(0)} KB, ` +
+        `${result.chapters} chapters, ${result.words.toLocaleString()} words.`);
+      log(`The upload sheet has been refreshed to match.`);
+      break;
+    }
+
     case "export-dashboard": {
       const payload = await buildDashboardExport();
       const out = String(flag("out", path.join(paths().data, "dashboard.json")));
@@ -377,6 +400,7 @@ trust, and never with the port forwarded to the internet.`);
   status | show <id> | genres
   languages                       list the languages a book can be written in
   share <id> [--hours n]          read it on your phone before approving
+  rebuild <id>                    rebuild the EPUB after editing manuscript.md
   deliver [id]                    copy a book to your Drive folder (no id: set-up help)
   export-dashboard [--out file]   write the catalogue for the dashboard to import
   approve <id> | reject <id> [reason]

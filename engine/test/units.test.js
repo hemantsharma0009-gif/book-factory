@@ -17,6 +17,7 @@ import { stubPlan } from "../src/agents/planner.js";
 import { __test as __editor } from "../src/agents/editor.js";
 import { mintLink, revokeLink, createShareServer, makeCertificate, __test as __share } from "../src/share.js";
 import { deliverBook, safeName, folderNameFor } from "../src/deliver.js";
+import { parseManuscript, rebuildBook, manuscriptIsNewer } from "../src/rebuild.js";
 
 test("genre rotation never repeats within the cooldown window", () => {
   const history = [];
@@ -920,4 +921,146 @@ async function stubLibrary({ priceUsd = 9.99 } = {}) {
   const target = path.join(dir, "Drive");
   await fs.mkdir(target, { recursive: true });
   return { dir, bookId, target };
+}
+
+test("a manuscript splits back into the chapters it was written from", () => {
+  // The file you edit IS the source, so this has to survive a round trip.
+  const md = ["# Chapter 1: The Opening", "", "First body.", "", "---", "",
+              "# Chapter 2: The Middle", "", "Second body.\n\nWith two paragraphs."].join("\n");
+  const chapters = parseManuscript(md);
+
+  assert.equal(chapters.length, 2);
+  assert.equal(chapters[0].title, "Chapter 1: The Opening");
+  assert.equal(chapters[0].body, "First body.");
+  assert.equal(chapters[1].number, 2);
+  assert.match(chapters[1].body, /two paragraphs/);
+});
+
+test("an edited manuscript keeps writing whose heading was reformatted", () => {
+  // Dropping a chapter because someone changed its title line would lose work
+  // silently, which is the worst way to lose it.
+  const chapters = parseManuscript("# Kept\n\nBody one.\n\n---\n\nNo heading here, just prose.");
+  assert.equal(chapters.length, 2);
+  assert.equal(chapters[1].body, "No heading here, just prose.");
+  assert.equal(chapters[1].title, "Chapter 2");
+});
+
+test("adding or removing a chapter in the file changes the book", () => {
+  const three = parseManuscript(["# A", "", "a", "", "---", "", "# B", "", "b", "", "---", "", "# C", "", "c"].join("\n"));
+  assert.equal(three.length, 3);
+  assert.deepEqual(three.map((c) => c.number), [1, 2, 3]);
+
+  const one = parseManuscript("# Only\n\njust this");
+  assert.equal(one.length, 1);
+});
+
+test("an empty manuscript yields nothing rather than a phantom chapter", () => {
+  assert.deepEqual(parseManuscript(""), []);
+  assert.deepEqual(parseManuscript("\n\n---\n\n"), []);
+});
+
+test("rebuilding an edited manuscript puts the new words in the EPUB", async () => {
+  const { dir, bookId } = await rebuildFixture();
+  try {
+    await fs.writeFile(
+      path.join(dir, "books", bookId, "manuscript.md"),
+      "# Chapter 1: Fixed\n\nThe corrected sentence.\n\n---\n\n# Chapter 2: Also fixed\n\nMore corrected text.",
+    );
+
+    const result = await rebuildBook({ id: bookId });
+    assert.equal(result.chapters, 2);
+
+    const zip = await JSZip.loadAsync(await fs.readFile(path.join(dir, "books", bookId, "book.epub")));
+    const first = await zip.file("OEBPS/chap001.xhtml").async("string");
+    assert.match(first, /The corrected sentence/);
+    assert.doesNotMatch(first, /original wording/, "the EPUB still carries the text you replaced");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a rebuild updates the counts the dashboard reports", async () => {
+  const { dir, bookId } = await rebuildFixture();
+  try {
+    await fs.writeFile(path.join(dir, "books", bookId, "manuscript.md"), "# Only one now\n\nShort.");
+    await rebuildBook({ id: bookId });
+
+    const state = JSON.parse(await fs.readFile(path.join(dir, "library.json"), "utf8"));
+    const book = state.books.find((b) => b.id === bookId);
+    assert.equal(book.chapterCount, 1, "chapter count did not follow the edit");
+    assert.equal(book.wordCount, 1);
+    assert.ok(book.rebuiltAt > 0);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a rebuild re-attaches figures already on disk rather than losing them", async () => {
+  const { dir, bookId } = await rebuildFixture();
+  try {
+    await fs.writeFile(path.join(dir, "books", bookId, "fig-001.svg"), "<svg xmlns='http://www.w3.org/2000/svg'/>");
+    await rebuildBook({ id: bookId });
+
+    const zip = await JSZip.loadAsync(await fs.readFile(path.join(dir, "books", bookId, "book.epub")));
+    assert.ok(zip.file("OEBPS/fig-001.svg"), "the figure was dropped by the rebuild");
+    const opf = await zip.file("OEBPS/content.opf").async("string");
+    assert.match(opf, /fig-001\.svg/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an edit after the build is detectable, and a rebuild clears it", async () => {
+  // This is what stops you publishing the version you meant to fix.
+  const { dir, bookId } = await rebuildFixture();
+  try {
+    assert.equal(await manuscriptIsNewer(bookId, "book.epub"), false, "flagged a book nobody had touched");
+
+    const later = new Date(Date.now() + 10_000);
+    await fs.writeFile(path.join(dir, "books", bookId, "manuscript.md"), "# Edited\n\nNew words.");
+    await fs.utimes(path.join(dir, "books", bookId, "manuscript.md"), later, later);
+    assert.equal(await manuscriptIsNewer(bookId, "book.epub"), true, "did not notice the edit");
+
+    await rebuildBook({ id: bookId });
+    assert.equal(await manuscriptIsNewer(bookId, "book.epub"), false, "still flagged after rebuilding");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** A library holding one built book, ready to be edited. */
+async function rebuildFixture() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bf-rebuild-"));
+  process.env.BOOK_FACTORY_DATA = dir;
+
+  const bookId = "bk_rebuild";
+  const chapters = [
+    { number: 1, title: "Chapter 1: Start", body: "The original wording." },
+    { number: 2, title: "Chapter 2: Next", body: "More original wording." },
+  ];
+
+  await fs.mkdir(path.join(dir, "books", bookId), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "books", bookId, "manuscript.md"),
+    chapters.map((c) => `# ${c.title}\n\n${c.body}`).join("\n\n---\n\n"),
+  );
+
+  const epub = await buildEpub({
+    title: "Rebuild Fixture", subtitle: "s", author: "A", language: "en",
+    description: "d", chapters, figures: new Map(),
+  });
+  await fs.writeFile(path.join(dir, "books", bookId, "book.epub"), epub);
+
+  const book = {
+    id: bookId, uuid: "11111111-1111-1111-1111-111111111111",
+    title: "Rebuild Fixture", subtitle: "s", author: "A", language: "en",
+    status: "awaiting_approval", epubFile: "book.epub", epubBytes: epub.length,
+    chapterCount: 2, wordCount: 6, figureCount: 0,
+    listing: { description: "d", priceUsd: 9.99, coverBrief: {} },
+    cost: { usd: 0 }, createdAt: Date.now(), updatedAt: Date.now(),
+  };
+  await fs.writeFile(path.join(dir, "library.json"),
+    JSON.stringify({ version: 1, books: [book], genreHistory: [], schedule: null, runs: [] }));
+
+  return { dir, bookId };
 }
