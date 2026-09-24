@@ -179,7 +179,17 @@ async function renderDetail(book) {
           <dt>Length</dt><dd>${book.wordCount.toLocaleString()} words · ${book.chapterCount} chapters · ${book.figureCount} figures</dd>
           <dt>Price</dt><dd>$${l.priceUsd.toFixed(2)} — ${esc(l.priceRationale)}</dd>
           <dt>Model</dt><dd>${esc(book.model)}</dd>
-          <dt>Cost to make</dt><dd>$${book.cost.usd.toFixed(2)}</dd>
+          <dt>Cost to make</dt><dd>$${book.cost.usd.toFixed(2)}${
+            book.economics?.month?.usd
+              ? ` <span class="small muted">· $${book.economics.month.usd.toFixed(2)} across ${book.economics.month.books} run(s) in ${book.economics.month.days} days</span>`
+              : ""
+          }</dd>
+          ${book.economics?.stores?.length ? `<dt>Breaks even at</dt><dd>${
+            book.economics.stores.map((s) =>
+              `${esc(s.label)} <span class="small muted">$${s.net.toFixed(2)}/sale · ${
+                s.copies === 0 ? "nothing to recover" : `${s.copies} cop${s.copies === 1 ? "y" : "ies"}`
+              }</span>`).join("<br>")
+          }</dd>` : ""}
           ${book.published.gumroad?.url ? `<dt>Gumroad</dt><dd><a href="${esc(book.published.gumroad.url)}" target="_blank" rel="noopener">${esc(book.published.gumroad.url)}</a></dd>` : ""}
         </dl>
       </div>

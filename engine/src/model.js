@@ -26,8 +26,30 @@ function api() {
   return client;
 }
 
+/**
+ * Cached tokens are not free, and are not priced like ordinary input.
+ *
+ *   write  1.25x the input rate for the default 5-minute entry, 2x for a
+ *          one-hour one - you pay a premium to put the prefix in the cache
+ *   read   0.1x the input rate - cheap, which is the point, but not zero
+ *
+ * Counting them at zero is what made the reported cost of a book wrong: the
+ * editorial pass sends the whole manuscript as a cached prefix, so a
+ * twelve-chapter book writes ~100k tokens to cache once and reads them back
+ * on every chapter. At Sonnet rates that is real money reported as $0.00.
+ */
+const CACHE_WRITE_5M = 1.25;
+const CACHE_WRITE_1H = 2;
+const CACHE_READ = 0.1;
+
 /** Running tally for the current process, reported at the end of a run. */
-export const spend = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, usd: 0 };
+export const spend = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+  usd: 0,
+};
 
 function recordUsage(usage, { batch = false } = {}) {
   if (!usage) return;
@@ -36,13 +58,31 @@ function recordUsage(usage, { batch = false } = {}) {
   const input = usage.input_tokens || 0;
   const output = usage.output_tokens || 0;
   const cacheRead = usage.cache_read_input_tokens || 0;
+  const cacheWrite = usage.cache_creation_input_tokens || 0;
+
+  // When the API breaks writes down by lifetime, price each at its own rate.
+  // Without the breakdown, assume the 5-minute entry this engine actually
+  // asks for - guessing the dearer one would overstate every run.
+  const byTtl = usage.cache_creation || null;
+  const write1h = byTtl ? byTtl.ephemeral_1h_input_tokens || 0 : 0;
+  const write5m = byTtl ? byTtl.ephemeral_5m_input_tokens || 0 : cacheWrite;
 
   spend.inputTokens += input;
   spend.outputTokens += output;
   spend.cacheReadTokens += cacheRead;
+  spend.cacheWriteTokens += cacheWrite;
+
   spend.usd +=
-    ((input / 1e6) * price.input + (output / 1e6) * price.output) * multiplier;
+    ((input / 1e6) * price.input +
+      (output / 1e6) * price.output +
+      (write5m / 1e6) * price.input * CACHE_WRITE_5M +
+      (write1h / 1e6) * price.input * CACHE_WRITE_1H +
+      (cacheRead / 1e6) * price.input * CACHE_READ) *
+    multiplier;
 }
+
+/** Exposed for the unit tests; nothing else should reach for it. */
+export const __test = { recordUsage, CACHE_WRITE_5M, CACHE_WRITE_1H, CACHE_READ };
 
 export function spendReport() {
   return {

@@ -3,7 +3,7 @@
  * Command line entry point.
  *
  *   generate [--genre id] [--language hi] [--chapters n] [--words n]
-           [--images charts|none] [--dry-run]
+           [--images charts|none] [--dry-run] [--yes]
            [--sample n]          write only the first n chapters (default 2) to
                                  judge the prose cheaply before a full run
  *   status
@@ -32,14 +32,25 @@ import { buildKdpPack, writeKdpPack } from "./publish/kdp.js";
 import { publishToGumroad, listGumroadProducts } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt, isDue, shouldRun } from "./scheduler.js";
 import { GENRES } from "./genres.js";
-import { DEFAULTS, LANGUAGES, paths } from "./config.js";
+import { DEFAULTS, LANGUAGES, paths, PRICING, MODEL, isDryRun } from "./config.js";
 import { createShareServer, mintLink, lanAddresses, makeCertificate } from "./share.js";
 import { deliverBook, deliverTarget, likelyDriveFolders } from "./deliver.js";
 import { buildDashboardExport } from "./dashboard-export.js";
 import { rebuildBook, manuscriptIsNewer } from "./rebuild.js";
+import { economicsFor, estimateRun } from "./economics.js";
+import readline from "node:readline/promises";
 
 const args = process.argv.slice(2);
 const command = args[0];
+
+/**
+ * Above this, a real run asks before spending. Override in .env.
+ *
+ * Declared here rather than beside confirmSpend: anything below main()'s call
+ * at the foot of this file is still in its temporal dead zone when a command
+ * runs, and reading it throws.
+ */
+const CONFIRM_ABOVE_USD = Number(process.env.BOOK_FACTORY_CONFIRM_ABOVE || 1);
 
 function flag(name, fallback = undefined) {
   const i = args.indexOf(`--${name}`);
@@ -62,6 +73,17 @@ async function main() {
     case "generate": {
       if (flag("dry-run")) process.env.BOOK_FACTORY_DRY_RUN = "1";
       const sampleFlag = flag("sample", false);
+      const sampleChapters = sampleFlag ? Number(sampleFlag === true ? 2 : sampleFlag) : 0;
+
+      if (!(await confirmSpend({
+        chapters: sampleChapters || Number(flag("chapters", 12)),
+        wordsPerChapter: Number(flag("words", 2200)),
+        assumeYes: Boolean(flag("yes")),
+      }))) {
+        log("Cancelled. Nothing was generated and nothing was spent.");
+        break;
+      }
+
       const book = await produceBook({
         genreId: flag("genre", null) || null,
         chapters: Number(flag("chapters", 12)),
@@ -77,6 +99,8 @@ async function main() {
       // The upload sheet has to exist before the copy, or your Drive gets the
       // book without the instructions for publishing it.
       await deliverBook({ id: book.id, log });
+
+      await reportEconomics(book.id, log);
 
       log(`\nArtifacts: ${store.bookDir(book.id)}`);
       log(`Review it, then: node src/cli.js approve ${book.id}`);
@@ -424,3 +448,77 @@ main().catch((err) => {
   process.stderr.write(`\nError: ${err.message}\n`);
   process.exit(1);
 });
+
+/**
+ * What the book cost, and what gets it back.
+ *
+ * Printed after a run because that is when you decide whether to make another
+ * one - not to weigh on whether to publish this one, which should turn on
+ * whether it is any good.
+ */
+async function reportEconomics(id, log) {
+  const state = await store.load();
+  const book = store.findBook(state, id);
+  if (!book) return;
+
+  const { cost, stores, month } = economicsFor({ book, runs: state.runs });
+  if (!cost && !month.usd) return;
+
+  log("");
+  log(`Cost to make: $${cost.toFixed(2)}`);
+
+  for (const row of stores) {
+    log(
+      `  ${row.label.padEnd(18)} $${row.price.toFixed(2)} · ${Math.round(row.rate * 100)}% · ` +
+        `$${row.net.toFixed(2)}/sale · breaks even on ` +
+        (row.copies === 0 ? "nothing to recover" : `${row.copies} cop${row.copies === 1 ? "y" : "ies"}`),
+    );
+  }
+
+  log(`\nSpent in the last ${month.days} days: $${month.usd.toFixed(2)} across ${month.books} run(s).`);
+}
+
+/**
+ * Show what a run will cost, and get a yes when it is more than small change.
+ *
+ * The estimate is the only cost figure that can change a decision - after the
+ * run the money is spent whatever it says. A dry run spends nothing, so it is
+ * never gated.
+ *
+ * Never prompts when stdin is not a terminal. The scheduler runs this from
+ * cron, where a question would hang forever holding the run lock, and a
+ * factory that silently stops producing is worse than one that spends a
+ * dollar unasked - the budget guard in the scheduler is what caps that.
+ */
+async function confirmSpend({ chapters, wordsPerChapter, assumeYes }) {
+  const price = PRICING[MODEL] || PRICING["claude-sonnet-5"];
+  const estimate = estimateRun({ chapters, wordsPerChapter, price });
+  const dry = isDryRun();
+
+  log(
+    `About to write ${chapters} chapters of roughly ${wordsPerChapter.toLocaleString()} words ` +
+      `with ${MODEL}, batched and cached.`,
+  );
+  // A dry run spends nothing, but the figure is the reason to do one - it is
+  // what the real run would cost, seen before committing to it.
+  log(
+    dry
+      ? `A real run would cost about $${estimate.low.toFixed(2)} – $${estimate.high.toFixed(2)}. This one is free.\n`
+      : `Estimated cost: $${estimate.low.toFixed(2)} – $${estimate.high.toFixed(2)}\n`,
+  );
+
+  if (dry || assumeYes || estimate.mid <= CONFIRM_ABOVE_USD) return true;
+
+  if (!process.stdin.isTTY) {
+    log(`(over $${CONFIRM_ABOVE_USD.toFixed(2)}, but nothing is attached to ask - continuing)`);
+    return true;
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(`That is over $${CONFIRM_ABOVE_USD.toFixed(2)}. Continue? [y/N] `);
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
+}
