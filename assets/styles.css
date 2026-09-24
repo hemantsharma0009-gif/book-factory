@@ -791,7 +791,9 @@ button.bars-row[aria-pressed="true"] .bars-fill { background: var(--violet); }
   .sidebar.open { transform: none; }
   .main { padding: 16px 16px 56px; }
   .mobile-menu { display: inline-block; }
-  .top-title { display: flex; align-items: center; }
+  /* h1 and its subtitle sit on one row here; without a gap they collide,
+     reading as "Approvals0 awaiting approval". */
+  .top-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .bars-row { grid-template-columns: 110px 1fr 34px; }
 }
 

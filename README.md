@@ -178,6 +178,68 @@ Two things worth knowing:
   the failure is reported with the path the book is actually at, and
   `node src/cli.js deliver <bookId>` retries it.
 
+## Watching the book being written, and stopping it when you want to
+
+A batch of twelve chapters shows you nothing until it ends and cannot be
+interrupted. So the console defaults to **live mode**: one chapter at a time,
+streamed, each written to disk the moment it finishes.
+
+The progress panel has a bar, and **a download button in the same row as the
+bar** — because the whole point is that the book is yours at any moment, so the
+way to take it should never be somewhere else on the page. It serves a real
+EPUB of whatever exists at that second, openable on a phone, and labelled
+*inside the file* as a draft so it cannot be mistaken for the finished book
+once it has been forwarded to somebody.
+
+| Button | What it does |
+|---|---|
+| **Pause** | stops after the chapter it is writing, never mid-sentence — a half-written chapter is a chapter you paid for |
+| **Resume** | carries on; the plan, every finished chapter and every generated picture are reused, not repaid for |
+| **Stop** | ends the run and keeps everything written so far |
+| **Download the book so far** | EPUB, or plain text for editing |
+
+While it is paused, click any chapter to read it and edit it in place. **A
+chapter you edit becomes yours**: the editorial pass skips it when the run
+resumes, so nothing rewrites your words. That holds whether you edit it in the
+console or open `chapters/ch-003.md` in your own editor — the engine compares
+the text, not the timestamp, so a Drive sync or a resume is never mistaken for
+an edit.
+
+The same run can be driven from a terminal, and the two see the same book:
+
+```bash
+node src/cli.js generate --live --images artwork
+node src/cli.js pause  bk_abc123     # from a second terminal
+node src/cli.js runs                 # what is unfinished
+node src/cli.js resume bk_abc123
+```
+
+## Pictures in the book
+
+**Claude does not generate images**, so artwork needs a second key — Google,
+OpenAI, or any HTTP image API described by a small JSON file. `node src/cli.js
+images` says what you have configured, and a run that asks for artwork without a
+key stops before the first token is spent rather than after twelve chapters.
+
+The style is decided per book and applied to every picture, so the book looks
+illustrated rather than assembled from stock: fiction is briefed as cinematic
+photography, non-fiction as editorial. No image ever contains lettering — image
+models garble it, and garbled words printed in a book you are selling are a
+defect. The cover is generated artwork with the title typeset over it as real
+vector text, which is the only way to be certain the title is spelled correctly.
+
+`--images placeholder` lays the whole book out with real PNGs, offline and free,
+so you can see where the pictures fall before paying for any.
+
+KDP asks about AI text and AI images separately; an illustrated book records a
+disclosure covering both, and the upload sheet says so at the point you answer.
+
+**Pictures cost more to deliver than to make.** Amazon deducts a per-megabyte
+delivery fee from the 70% royalty on every sale, forever — a 12 MB illustrated
+book nets $5.19 a sale instead of $6.95, and past about 30 MB the 35% option
+(which has no delivery fee) genuinely pays more. Break-even, the upload sheet
+and the Drive note all say so, using the same number.
+
 ## Reading a finished book, and changing it before you publish
 
 The pipeline stops at `awaiting_approval` so a person reads the book. Reading

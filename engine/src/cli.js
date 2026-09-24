@@ -27,7 +27,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import * as store from "./store.js";
-import { produceBook, slug } from "./pipeline.js";
+import { produceBook, resumeBook, slug } from "./pipeline.js";
 import { buildKdpPack, writeKdpPack } from "./publish/kdp.js";
 import { publishToGumroad, listGumroadProducts } from "./publish/gumroad.js";
 import { CADENCES, nextRunAt, isDue, shouldRun } from "./scheduler.js";
@@ -38,6 +38,8 @@ import { deliverBook, deliverTarget, likelyDriveFolders } from "./deliver.js";
 import { buildDashboardExport } from "./dashboard-export.js";
 import { rebuildBook, manuscriptIsNewer } from "./rebuild.js";
 import { economicsFor, estimateRun } from "./economics.js";
+import * as runState from "./run-state.js";
+import { describeImageSetup, getProvider, assertUsable, DEFAULT_IMAGE_COST_USD } from "./illustrate/index.js";
 import readline from "node:readline/promises";
 
 const args = process.argv.slice(2);
@@ -74,26 +76,60 @@ async function main() {
       if (flag("dry-run")) process.env.BOOK_FACTORY_DRY_RUN = "1";
       const sampleFlag = flag("sample", false);
       const sampleChapters = sampleFlag ? Number(sampleFlag === true ? 2 : sampleFlag) : 0;
+      const chapterCount = Number(flag("chapters", 12));
+      const images = String(flag("images", "charts"));
+      const imageEvery = Number(flag("image-every", 1));
+      const imageDriver = flag("image-driver", null) || null;
+      // Batch is half price; live is the one you can watch and pause. The CLI
+      // keeps batch as the default because a terminal run is usually the
+      // unattended kind - the console defaults the other way.
+      const mode = flag("live") ? "live" : String(flag("mode", "batch"));
+      const editorial = !flag("no-edit");
 
+      // Fail on a missing image key here, before the first token is spent.
+      assertUsable(images, imageDriver);
+
+      const illustrated = sampleChapters || chapterCount;
       if (!(await confirmSpend({
-        chapters: sampleChapters || Number(flag("chapters", 12)),
+        chapters: sampleChapters || chapterCount,
         wordsPerChapter: Number(flag("words", 2200)),
         assumeYes: Boolean(flag("yes")),
+        mode,
+        editorial,
+        images: getProvider(images).costPerImage ? Math.ceil(illustrated / imageEvery) + 1 : 0,
+        imageCostUsd: getProvider(images).costPerImage,
       }))) {
         log("Cancelled. Nothing was generated and nothing was spent.");
         break;
       }
 
+      let stopProgress = () => {};
       const book = await produceBook({
         genreId: flag("genre", null) || null,
-        chapters: Number(flag("chapters", 12)),
+        chapters: chapterCount,
         wordsPerChapter: Number(flag("words", 2200)),
-        images: String(flag("images", "charts")),
+        images,
+        imageDriver,
+        imageEvery,
+        mode,
+        editorial,
         author: String(flag("author", "Book Factory Studio")),
         language: String(flag("language", DEFAULTS.language)),
         sample: sampleFlag ? Number(sampleFlag === true ? 2 : sampleFlag) : 0,
-        log,
+        onStart: (id) => {
+          log(`Book ${id} — pause it any time with:  node src/cli.js pause ${id}`);
+          stopProgress = startProgress(id);
+        },
+        log: (line) => { stopProgress.write ? stopProgress.write(line) : log(line); },
       });
+      stopProgress();
+
+      if (book?.paused || book?.cancelled) {
+        log(`\nStopped at your request. Nothing is lost.`);
+        log(`Read or edit it, then:  node src/cli.js resume ${book.bookId}`);
+        break;
+      }
+
       await writePack(book.id);
 
       // The upload sheet has to exist before the copy, or your Drive gets the
@@ -104,6 +140,100 @@ async function main() {
 
       log(`\nArtifacts: ${store.bookDir(book.id)}`);
       log(`Review it, then: node src/cli.js approve ${book.id}`);
+      break;
+    }
+
+    case "resume": {
+      const id = args[1];
+      if (!id) throw new Error("Usage: resume <book-id>   (see: runs)");
+      let stopProgress = startProgress(id);
+      const book = await resumeBook({
+        bookId: id,
+        log: (line) => { stopProgress.write ? stopProgress.write(line) : log(line); },
+      });
+      stopProgress();
+
+      if (book?.paused || book?.cancelled) {
+        log(`\nStopped again. Resume with:  node src/cli.js resume ${id}`);
+        break;
+      }
+      await writePack(book.id);
+      await deliverBook({ id: book.id, log });
+      await reportEconomics(book.id, log);
+      log(`\nReview it, then: node src/cli.js approve ${book.id}`);
+      break;
+    }
+
+    case "pause": {
+      const id = args[1];
+      if (!id) throw new Error("Usage: pause <book-id>");
+      const run = await runState.readRun(id);
+      if (!run) throw new Error(`No run for ${id}.`);
+      await runState.patchRun(id, (r) => {
+        r.pauseRequested = true;
+        runState.appendLog(r, "Pause requested from the CLI.");
+      });
+      await runState.settle(id);
+      log(`Pause requested. It finishes the chapter it is writing first, then stops.`);
+      break;
+    }
+
+    case "stop": {
+      const id = args[1];
+      if (!id) throw new Error("Usage: stop <book-id>");
+      await runState.patchRun(id, (r) => {
+        r.cancelRequested = true;
+        runState.appendLog(r, "Stop requested from the CLI.");
+      });
+      await runState.settle(id);
+      log(`Stop requested. Everything already written is kept; resume picks it up.`);
+      break;
+    }
+
+    case "runs": {
+      const state = await store.load();
+      const ids = new Set(state.books.map((b) => b.id));
+      const dirs = await fs.readdir(paths().books).catch(() => []);
+      const rows = [];
+
+      for (const dir of dirs) {
+        const run = await runState.readRun(dir);
+        if (!run || run.status === "done") continue;
+        rows.push(run);
+      }
+      void ids;
+
+      if (!rows.length) {
+        log("No unfinished books. Everything that was started is finished.");
+        break;
+      }
+
+      rows.sort((a, b) => b.updatedAt - a.updatedAt);
+      for (const run of rows) {
+        log(`${run.bookId}  ${String(runState.progressOf(run)).padStart(3)}%  ${run.status.padEnd(9)} ${run.title || "(untitled)"}`);
+        log(`  ${runState.summaryOf(run)}`);
+        log(`  resume:  node src/cli.js resume ${run.bookId}`);
+      }
+      break;
+    }
+
+    case "images": {
+      const setup = describeImageSetup();
+      log("Where pictures come from\n");
+      log("Claude does not generate images. Artwork needs a second key, from one of:\n");
+      for (const driver of setup.drivers) {
+        const ready = driver.env.some((name) => process.env[name]);
+        const how = driver.env.length ? driver.env.join(" or ") : "no key needed";
+        log(`  ${ready ? "✓" : " "} ${driver.id.padEnd(12)} ${driver.label}`);
+        log(`      ${how}`);
+      }
+      log("");
+      log(setup.configured.length
+        ? `Ready: ${setup.configured.join(", ")}.  Use --images artwork`
+        : "None configured. Use --images placeholder to lay the book out for free first.");
+      log("");
+      log(`Cost is assumed to be $${DEFAULT_IMAGE_COST_USD.toFixed(2)} per image for the estimate.`);
+      log("Set BOOK_FACTORY_IMAGE_COST to your provider's real rate.");
       break;
     }
 
@@ -418,9 +548,23 @@ trust, and never with the port forwarded to the internet.`);
     default:
       log(`book-factory engine
 
-  generate [--genre id] [--chapters n] [--words n] [--images charts|none] [--dry-run]
+  generate [--genre id] [--chapters n] [--words n] [--dry-run]
+           [--images none|charts|placeholder|artwork]
+                                 artwork needs an image API key; see: images
+           [--image-every n]     illustrate every nth chapter (default: all)
+           [--image-driver id]   google | openai | custom | placeholder
+           [--live]              stream it chapter by chapter so you can watch,
+                                 pause and edit as it is written. Full price;
+                                 batch (the default) is half price but cannot
+                                 be paused and shows nothing until it ends
+           [--no-edit]           skip the editorial pass
            [--sample n]          write only the first n chapters (default 2) to
                                  judge the prose cheaply before a full run
+  runs                            unfinished books, and how to resume each
+  resume <id>                     carry on from where it stopped; nothing already
+                                  written is generated or paid for twice
+  pause <id> | stop <id>          from another terminal, while it runs
+  images                          which image providers are configured
   status | show <id> | genres
   languages                       list the languages a book can be written in
   share <id> [--hours n]          read it on your phone before approving
@@ -436,6 +580,49 @@ trust, and never with the port forwarded to the internet.`);
   should-run                      exit 0 when cron should generate (due + guards)
   next-due                        exit 0 when a run is due, ignoring guards`);
   }
+}
+
+/**
+ * A progress bar for the terminal.
+ *
+ * Only drawn on a real terminal: piped into a file or a cron log, a line
+ * rewritten forty times a second is unreadable, so there it falls back to the
+ * ordinary log lines.
+ */
+function startProgress(bookId) {
+  if (!process.stdout.isTTY) {
+    const passthrough = () => {};
+    passthrough.write = null;
+    return passthrough;
+  }
+
+  let last = "";
+  const draw = async () => {
+    const run = await runState.readRun(bookId);
+    if (!run) return;
+    const percent = runState.progressOf(run);
+    const filled = Math.round((percent / 100) * 24);
+    const bar = "█".repeat(filled) + "·".repeat(24 - filled);
+    const cost = run.costUsd ? `  $${run.costUsd.toFixed(2)}` : "";
+    const line = `  [${bar}] ${String(percent).padStart(3)}%  ${runState.summaryOf(run)}${cost}`;
+    if (line === last) return;
+    last = line;
+    process.stdout.write(`\r\u001b[2K${line.slice(0, (process.stdout.columns || 100) - 1)}`);
+  };
+
+  const timer = setInterval(() => { draw().catch(() => {}); }, 400);
+  timer.unref?.();
+
+  const stop = () => {
+    clearInterval(timer);
+    process.stdout.write("\r\u001b[2K");
+  };
+  // Log lines have to clear the bar first or they land on top of it.
+  stop.write = (line) => {
+    process.stdout.write(`\r\u001b[2K${line}\n`);
+    last = "";
+  };
+  return stop;
 }
 
 async function writePack(id) {
@@ -461,7 +648,7 @@ async function reportEconomics(id, log) {
   const book = store.findBook(state, id);
   if (!book) return;
 
-  const { cost, stores, month } = economicsFor({ book, runs: state.runs });
+  const { cost, stores, month, fileMb, delivery } = economicsFor({ book, runs: state.runs });
   if (!cost && !month.usd) return;
 
   log("");
@@ -470,9 +657,25 @@ async function reportEconomics(id, log) {
   for (const row of stores) {
     log(
       `  ${row.label.padEnd(18)} $${row.price.toFixed(2)} · ${Math.round(row.rate * 100)}% · ` +
-        `$${row.net.toFixed(2)}/sale · breaks even on ` +
+        `$${row.net.toFixed(2)}/sale${row.delivery ? ` (after $${row.delivery.toFixed(2)} delivery)` : ""} · breaks even on ` +
         (row.copies === 0 ? "nothing to recover" : `${row.copies} cop${row.copies === 1 ? "y" : "ies"}`),
     );
+  }
+
+  // Delivery is charged on every sale forever, so a heavy book is not a
+  // one-off cost - it is a standing deduction from the royalty.
+  if (delivery.usd >= 0.2) {
+    log("");
+    log(
+      `This book is ${fileMb.toFixed(1)} MB, and Amazon charges about ` +
+        `$${delivery.perMb.toFixed(2)}/MB delivery on the 70% option — ` +
+        `$${delivery.usd.toFixed(2)} off every single sale, for as long as it is listed.`,
+    );
+    if (delivery.cheaperAtLowRate) {
+      log("At this size the 35% option, which has no delivery fee, actually pays more.");
+    } else {
+      log("Fewer or smaller pictures is the lever: BOOK_FACTORY_IMAGE_SIZE and --image-every.");
+    }
   }
 
   log(`\nSpent in the last ${month.days} days: $${month.usd.toFixed(2)} across ${month.books} run(s).`);
@@ -490,15 +693,38 @@ async function reportEconomics(id, log) {
  * factory that silently stops producing is worse than one that spends a
  * dollar unasked - the budget guard in the scheduler is what caps that.
  */
-async function confirmSpend({ chapters, wordsPerChapter, assumeYes }) {
+async function confirmSpend({
+  chapters,
+  wordsPerChapter,
+  assumeYes,
+  mode = "batch",
+  editorial = true,
+  images = 0,
+  imageCostUsd = 0,
+}) {
   const price = PRICING[MODEL] || PRICING["claude-sonnet-5"];
-  const estimate = estimateRun({ chapters, wordsPerChapter, price });
+  const batch = mode !== "live";
+  const estimate = estimateRun({
+    chapters,
+    wordsPerChapter,
+    price,
+    batch,
+    editorial,
+    images,
+    imageCostUsd,
+  });
   const dry = isDryRun();
 
   log(
     `About to write ${chapters} chapters of roughly ${wordsPerChapter.toLocaleString()} words ` +
-      `with ${MODEL}, batched and cached.`,
+      `with ${MODEL}, ${batch ? "batched and cached" : "streamed live and cached"}.`,
   );
+  if (!batch) {
+    log("Live mode is full price - roughly double batch - and buys you a chapter you can read, pause and edit as it is written.");
+  }
+  if (images) {
+    log(`Plus ${images} generated picture(s) at about $${imageCostUsd.toFixed(2)} each, billed by your image provider.`);
+  }
   // A dry run spends nothing, but the figure is the reason to do one - it is
   // what the real run would cost, seen before committing to it.
   log(

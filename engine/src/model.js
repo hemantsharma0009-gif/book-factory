@@ -218,3 +218,81 @@ export async function batchProse({
   }
   return results;
 }
+
+/**
+ * One prose generation, streamed.
+ *
+ * The batch path above is half price and is still the right call for an
+ * unattended run. This path exists because you asked to watch a book being
+ * written and to stop it partway: a batch has no partial result to show and no
+ * point at which it can be interrupted, so live mode trades the 50% discount
+ * for a chapter you can read the moment it lands.
+ *
+ * `onDelta` is called with every text fragment as it arrives, which is what
+ * makes the progress bar move inside a chapter rather than once per chapter.
+ */
+export async function streamProse({
+  system,
+  prompt,
+  maxTokens = 16000,
+  effort = "medium",
+  onDelta = () => {},
+  signal,
+} = {}) {
+  if (isDryRun()) return stubStream({ prompt, onDelta, signal });
+
+  const stream = api().messages.stream(
+    {
+      model: MODEL,
+      max_tokens: maxTokens,
+      thinking: { type: "adaptive" },
+      output_config: { effort },
+      // Byte-identical across chapters, so chapter 2 onwards reads the bible
+      // from cache at a tenth of the input rate instead of resending it.
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: prompt }],
+    },
+    signal ? { signal } : undefined,
+  );
+
+  stream.on("text", (fragment) => onDelta(fragment));
+
+  const message = await stream.finalMessage();
+  recordUsage(message.usage);
+
+  if (message.stop_reason === "refusal") {
+    throw new Error(
+      `The model declined this request (${message.stop_details?.category || "unspecified"}). ` +
+        `Adjust the brief and retry.`,
+    );
+  }
+  if (message.stop_reason === "max_tokens") {
+    throw new Error(
+      `The chapter hit the ${maxTokens.toLocaleString()}-token ceiling and was cut off mid-sentence. ` +
+        `Lower --words or raise the ceiling; publishing a truncated chapter is worse than retrying.`,
+    );
+  }
+  return textOf(message);
+}
+
+/**
+ * Dry-run streaming. Emits the same stub prose in fragments, so the progress
+ * bar, the pause button and the partial download are all exercisable without
+ * an API key or a cent of spend. The delay is what makes it a usable rehearsal
+ * rather than an instant no-op.
+ */
+async function stubStream({ prompt, onDelta, signal }) {
+  const text = stubProse(prompt);
+  const delay = Number(process.env.BOOK_FACTORY_STUB_DELAY_MS ?? 6);
+  const words = text.split(/(\s+)/);
+  let out = "";
+
+  for (let i = 0; i < words.length; i += 12) {
+    if (signal?.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    const fragment = words.slice(i, i + 12).join("");
+    out += fragment;
+    onDelta(fragment);
+    if (delay) await new Promise((r) => setTimeout(r, delay));
+  }
+  return out;
+}

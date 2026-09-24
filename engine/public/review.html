@@ -29,6 +29,62 @@
     border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; max-height: 190px; overflow: auto; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .chip { font-size: 11px; background: var(--panel-3); border: 1px solid var(--border); padding: 4px 9px; border-radius: 999px; }
+
+  /* Progress panel. The download control sits in the same row as the bar, on
+     purpose: the whole point is that you can take the book at any moment, so
+     the way to take it should never be somewhere else on the page. */
+  .run-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+  .run-head h2 { margin: 0; }
+  .run-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  /* The download controls are links, because a link downloads whatever exists
+     at the moment it is clicked. They should still read as buttons. */
+  a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+  .bar-row { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; flex-wrap: wrap; }
+  .bar-wrap { position: relative; flex: 1 1 260px; min-width: 200px; height: 24px; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+  .bar-fill { height: 100%; width: 0; border-radius: 999px; transition: width .5s ease;
+    background: linear-gradient(90deg, var(--blue), var(--green)); }
+  .bar-wrap.paused .bar-fill { background: linear-gradient(90deg, #8a6d3b, var(--yellow)); }
+  .bar-wrap.failed .bar-fill { background: var(--red); }
+  .bar-pct { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px;
+    font-weight: 700; letter-spacing: .06em; text-shadow: 0 1px 2px rgba(0,0,0,.55); }
+  .run-cost { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+  .chapter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .chapter-chip { font: inherit; font-size: 11px; padding: 5px 10px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--text); display: inline-flex; gap: 6px; align-items: center; }
+  .chapter-chip:hover { background: var(--panel-3); }
+  .chapter-chip[disabled] { opacity: .45; cursor: default; }
+  .chapter-chip[data-state="writing"] { border-color: var(--blue); animation: breathe 1.6s ease-in-out infinite; }
+  .chapter-chip[data-state="drafted"] { border-color: var(--border); }
+  .chapter-chip[data-state="edited"] { border-color: var(--green); }
+  .chapter-chip[data-state="edited-by-you"] { border-color: var(--yellow); color: var(--yellow); }
+  @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+  @media (prefers-reduced-motion: reduce) {
+    .chapter-chip[data-state="writing"] { animation: none; }
+    .bar-fill { transition: none; }
+  }
+
+  .chapter-editor { margin-top: 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--panel-2); padding: 14px; }
+  .chapter-editor textarea { width: 100%; min-height: 320px; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: Georgia, serif;
+    font-size: 14px; line-height: 1.6; resize: vertical; }
+  .editor-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .gen-options { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; max-width: 100%; }
+  /* A select is as wide as its longest option unless it is told otherwise, and
+     "Batch — half price, no pausing" is wide enough to push the whole page
+     sideways on a phone. Capped here rather than by shortening the labels,
+     because the labels are the part that explains the choice. */
+  .gen-options select.input { width: auto; max-width: 230px; min-width: 0; }
+
+  @media (max-width: 720px) {
+    .top-actions { width: 100%; flex-wrap: wrap; }
+    /* A grid, not a flex row: 1fr resolves against the row's real width, so a
+       long option can no longer widen the page. */
+    .gen-options { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 8px; }
+    .gen-options select.input { width: 100%; max-width: 100%; }
+  }
 </style>
 </head>
 <body>
@@ -40,16 +96,53 @@
     <p id="sub">Nothing is published until you approve it.</p>
   </div>
   <div class="top-actions">
-    <label class="small muted" for="genLanguage">Language</label>
-    <select id="genLanguage" class="input" style="width:auto"></select>
+    <div class="gen-options">
+      <label class="small muted" for="genLanguage">Language</label>
+      <select id="genLanguage" class="input"></select>
+      <label class="small muted" for="genImages">Pictures</label>
+      <select id="genImages" class="input"></select>
+      <label class="small muted" for="genMode">Mode</label>
+      <select id="genMode" class="input">
+        <option value="live">Live — watch it, pause it</option>
+        <option value="batch">Batch — half price, no pausing</option>
+      </select>
+    </div>
     <button class="btn" id="refresh">Refresh</button>
     <button class="btn primary" id="generate">Generate a book</button>
   </div>
 </header>
 
 <section class="section card" id="runCard" hidden>
-  <h2>Generation in progress</h2>
-  <div class="runlog" id="runLog"></div>
+  <div class="run-head">
+    <div>
+      <h2 id="runTitle">Writing your book</h2>
+      <p class="small muted" id="runSummary" style="margin:4px 0 0"></p>
+    </div>
+    <div class="run-actions">
+      <button class="btn" id="runPause">Pause</button>
+      <button class="btn primary" id="runResume" hidden>Resume</button>
+      <button class="btn danger" id="runStop">Stop</button>
+    </div>
+  </div>
+
+  <div class="bar-row">
+    <div class="bar-wrap" id="runBarWrap" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="bar-fill" id="runBar"></div>
+      <span class="bar-pct" id="runPct">0%</span>
+    </div>
+    <a class="btn primary" id="dlEpub" href="#" download>Download the book so far</a>
+    <a class="btn" id="dlText" href="#" download>Download as text</a>
+    <span class="run-cost" id="runCost"></span>
+  </div>
+
+  <p class="small muted" id="runHint" style="margin:2px 0 0"></p>
+  <div class="chapter-chips" id="runChapters"></div>
+  <div id="chapterEditor"></div>
+
+  <details style="margin-top:12px">
+    <summary class="small muted">Log</summary>
+    <div class="runlog" id="runLog" style="margin-top:8px"></div>
+  </details>
 </section>
 
 <section class="section card">
@@ -79,6 +172,7 @@
 const $ = (id) => document.getElementById(id);
 let state = null;
 let selected = null;
+let lastDetailKey = null;
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c]));
@@ -110,7 +204,15 @@ async function refresh() {
   renderRun();
   if (selected) {
     const still = state.books.find((b) => b.id === selected);
-    if (still) renderDetail(still);
+    // While a run is live this refreshes every 1.2 seconds. Re-rendering the
+    // detail panel each time would blank the reader, re-download the
+    // manuscript and throw away your scroll position mid-paragraph, so it is
+    // only redrawn when something about the book has actually changed.
+    const key = still && [still.id, still.updatedAt, still.status, still.manuscriptEdited].join("|");
+    if (still && key !== lastDetailKey) {
+      lastDetailKey = key;
+      renderDetail(still);
+    }
   }
 }
 
@@ -134,6 +236,21 @@ function renderSchedule() {
     langSelect.innerHTML = state.languages
       .map((l) => `<option value="${esc(l.code)}">${esc(l.name)}${l.code === "en" ? "" : ` — ${esc(l.endonym)}`}</option>`)
       .join("");
+  }
+
+  const imageSelect = $("genImages");
+  if (imageSelect && !imageSelect.options.length && state.imageProviders) {
+    const ready = state.imageSetup?.ready;
+    imageSelect.innerHTML = state.imageProviders
+      .map((p) => {
+        // An option that cannot work is shown and disabled rather than hidden,
+        // so "where is the artwork setting?" has an answer on the screen.
+        const blocked = p.requiresKey && !ready;
+        const label = blocked ? `${p.label} — needs an image API key` : p.label;
+        return `<option value="${esc(p.id)}"${blocked ? " disabled" : ""}>${esc(label)}</option>`;
+      })
+      .join("");
+    imageSelect.value = state.imageSetup?.ready ? "artwork" : "charts";
   }
 
   const history = state.genreHistory || [];
@@ -186,9 +303,16 @@ async function renderDetail(book) {
           }</dd>
           ${book.economics?.stores?.length ? `<dt>Breaks even at</dt><dd>${
             book.economics.stores.map((s) =>
-              `${esc(s.label)} <span class="small muted">$${s.net.toFixed(2)}/sale · ${
+              `${esc(s.label)} <span class="small muted">$${s.net.toFixed(2)}/sale${
+                s.delivery ? ` after $${s.delivery.toFixed(2)} delivery` : ""
+              } · ${
                 s.copies === 0 ? "nothing to recover" : `${s.copies} cop${s.copies === 1 ? "y" : "ies"}`
               }</span>`).join("<br>")
+          }</dd>` : ""}
+          ${book.economics?.delivery?.usd >= 0.2 ? `<dt>File size</dt><dd>${book.economics.fileMb.toFixed(1)} MB — Amazon takes $${book.economics.delivery.usd.toFixed(2)} off <em>every</em> sale in delivery fees.${
+            book.economics.delivery.cheaperAtLowRate
+              ? " At this size the 35% option pays more, because it has no delivery fee."
+              : ""
           }</dd>` : ""}
           ${book.published.gumroad?.url ? `<dt>Gumroad</dt><dd><a href="${esc(book.published.gumroad.url)}" target="_blank" rel="noopener">${esc(book.published.gumroad.url)}</a></dd>` : ""}
         </dl>
@@ -235,21 +359,156 @@ async function renderDetail(book) {
     .join("");
 }
 
+const RUNNING = new Set(["running"]);
+let editingChapter = null;
+let pollTimer = null;
+
 function renderRun() {
   const run = state.activeRun;
   $("runCard").hidden = !run;
-  if (!run) return;
-  $("runLog").innerHTML = run.lines.map((l) => esc(l.line)).join("<br>")
-    + (run.error ? `<br><span style="color:var(--red)">${esc(run.error)}</span>` : "")
-    + (run.done && !run.error ? "<br>— finished —" : "");
+  if (!run) { stopPolling(); return; }
+
+  const live = RUNNING.has(run.status);
+  const done = run.status === "done";
+
+  $("runTitle").textContent = run.title || "Writing your book";
+  $("runSummary").textContent = run.summary || "";
+
+  const wrap = $("runBarWrap");
+  wrap.classList.toggle("paused", run.status === "paused" || run.pauseRequested);
+  wrap.classList.toggle("failed", run.status === "failed");
+  wrap.setAttribute("aria-valuenow", String(run.percent));
+  $("runBar").style.width = run.percent + "%";
+  $("runPct").textContent = run.percent + "%";
+
+  $("runCost").textContent = run.costUsd ? `$${run.costUsd.toFixed(2)} so far` : "";
+
+  // The download links are live URLs, not buttons that ask the server to make
+  // something first: the browser downloads whatever exists the moment you
+  // click, which is the whole promise of the button.
+  const stamp = run.updatedAt || Date.now();
+  $("dlEpub").href = `/api/runs/${run.bookId}/draft.epub?t=${stamp}`;
+  $("dlText").href = `/api/runs/${run.bookId}/draft.md?t=${stamp}`;
+  const nothingYet = !run.hasDraft;
+  for (const id of ["dlEpub", "dlText"]) {
+    $(id).classList.toggle("disabled", nothingYet);
+    $(id).style.pointerEvents = nothingYet ? "none" : "";
+    $(id).style.opacity = nothingYet ? "0.45" : "";
+  }
+  $("dlEpub").textContent = done ? "Download the book" : "Download the book so far";
+
+  $("runPause").hidden = !live;
+  $("runPause").disabled = Boolean(run.pauseRequested);
+  $("runPause").textContent = run.pauseRequested ? "Pausing…" : "Pause";
+  $("runResume").hidden = !run.resumable;
+  $("runStop").hidden = !live;
+
+  $("runHint").textContent = hintFor(run);
+
+  $("runChapters").innerHTML = run.chapters.map((c) => {
+    const readable = c.state !== "waiting";
+    return `<button class="chapter-chip" data-chapter="${c.number}" data-state="${esc(c.state)}"${readable ? "" : " disabled"}>`
+      + `<strong>${c.number}</strong> ${esc(shortTitle(c.title))}`
+      + (c.words ? ` <span class="muted">${c.words.toLocaleString()}w</span>` : "")
+      + (c.state === "edited-by-you" ? " ✎" : "")
+      + `</button>`;
+  }).join("");
+
+  $("runLog").innerHTML = (run.log || []).map((l) => esc(l.line)).join("<br>")
+    + (run.error ? `<br><span style="color:var(--red)">${esc(run.error)}</span>` : "");
   $("runLog").scrollTop = $("runLog").scrollHeight;
+
+  if (live) startPolling(); else stopPolling();
+}
+
+function shortTitle(title) {
+  return String(title || "").replace(/^Chapter\s+\d+:\s*/i, "").slice(0, 34);
+}
+
+function hintFor(run) {
+  if (run.status === "paused") {
+    return "Read any chapter below. Edit one and the editorial pass will leave it exactly as you wrote it.";
+  }
+  if (run.status === "failed") return run.error || "";
+  if (run.status === "cancelled") return "Stopped. Resume picks up where it left off — nothing is regenerated.";
+  if (run.status === "done") return "Finished and in the queue below, waiting for your approval.";
+  if (run.pauseRequested) return "A chapter part-written is a chapter paid for, so it finishes this one first.";
+  return "You can pause or download at any point. Chapters already written are kept.";
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(() => refresh().catch(() => {}), 1200);
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+async function openChapter(number) {
+  const run = state.activeRun;
+  if (!run) return;
+  const chapter = await api(`/api/runs/${run.bookId}/chapters/${number}`);
+  editingChapter = number;
+
+  $("chapterEditor").innerHTML = `
+    <div class="chapter-editor">
+      <div class="editor-head">
+        <div>
+          <strong>${esc(chapter.title)}</strong>
+          <span class="small muted"> — ${chapter.words.toLocaleString()} words</span>
+        </div>
+        <div class="run-actions">
+          <button class="btn" data-editor="close">Close</button>
+          <button class="btn primary" data-editor="save">Save my edit</button>
+        </div>
+      </div>
+      <textarea id="chapterBody" spellcheck="true"></textarea>
+      <p class="small muted" style="margin:8px 0 0">Saving marks this chapter as yours. The editorial pass will skip it, so nothing rewrites your words.</p>
+    </div>`;
+  $("chapterBody").value = chapter.body;
+  $("chapterEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function saveChapter() {
+  const run = state.activeRun;
+  if (!run || editingChapter == null) return;
+  const body = $("chapterBody").value;
+  await api(`/api/runs/${run.bookId}/chapters/${editingChapter}`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
+  toast(`Chapter ${editingChapter} saved as yours.`, "ok");
+  $("chapterEditor").innerHTML = "";
+  editingChapter = null;
+  await refresh();
 }
 
 document.addEventListener("click", async (event) => {
+  const chip = event.target.closest(".chapter-chip");
+  if (chip && !chip.disabled) {
+    openChapter(Number(chip.dataset.chapter)).catch((e) => toast(e.message, "bad"));
+    return;
+  }
+
+  const editorAction = event.target.closest("[data-editor]")?.dataset.editor;
+  if (editorAction === "close") {
+    $("chapterEditor").innerHTML = "";
+    editingChapter = null;
+    return;
+  }
+  if (editorAction === "save") {
+    saveChapter().catch((e) => toast(e.message, "bad"));
+    return;
+  }
+
   const item = event.target.closest(".queue-item");
   if (item) {
     const book = state.books.find((b) => b.id === item.dataset.id);
-    if (book) renderDetail(book);
+    if (book) {
+      lastDetailKey = [book.id, book.updatedAt, book.status, book.manuscriptEdited].join("|");
+      renderDetail(book);
+    }
     return;
   }
 
@@ -285,16 +544,48 @@ document.addEventListener("click", async (event) => {
 
 $("refresh").addEventListener("click", () => refresh().catch((e) => toast(e.message, "bad")));
 
-$("generate").addEventListener("click", async () => {
-  const dryRun = !confirm("Generate for real? This spends money on the API.\n\nOK = real run, Cancel = dry run (free).");
+async function runControl(what) {
+  const run = state.activeRun;
+  if (!run) return;
   try {
-    const language = $("genLanguage").value || "en";
-    await api("/api/generate", { method: "POST", body: JSON.stringify({ dryRun, language }) });
+    await api(`/api/runs/${run.bookId}/${what}`, { method: "POST" });
+    await refresh();
+    if (what === "resume") startPolling();
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+}
+
+$("runPause").addEventListener("click", () => runControl("pause"));
+$("runResume").addEventListener("click", () => runControl("resume"));
+$("runStop").addEventListener("click", () => {
+  if (!confirm("Stop this run?\n\nEverything written so far is kept and you can resume later.")) return;
+  runControl("stop");
+});
+
+$("generate").addEventListener("click", async () => {
+  const images = $("genImages").value;
+  const mode = $("genMode").value;
+  const provider = (state.imageProviders || []).find((p) => p.id === images);
+
+  // The cost of the choice is stated at the moment the choice is made, not
+  // buried in a settings page: live is roughly double batch, and pictures are
+  // billed per image by a different vendor.
+  const cost = [
+    mode === "live" ? "Live mode costs about twice what batch does." : "Batch mode is half price but cannot be paused.",
+    provider?.requiresKey ? `Pictures are generated by a separate image API and billed by it (about $${provider.costPerImage.toFixed(2)} each).` : "",
+  ].filter(Boolean).join("\n");
+
+  const dryRun = !confirm(`Generate for real? This spends money.\n\n${cost}\n\nOK = real run, Cancel = dry run (free).`);
+
+  try {
+    await api("/api/generate", {
+      method: "POST",
+      body: JSON.stringify({ dryRun, language: $("genLanguage").value || "en", images, mode }),
+    });
     toast(dryRun ? "Dry run started." : "Generation started.", "ok");
-    const timer = setInterval(async () => {
-      await refresh();
-      if (!state.activeRun || state.activeRun.done) clearInterval(timer);
-    }, 1500);
+    await refresh();
+    startPolling();
   } catch (err) {
     toast(err.message, "bad");
   }
