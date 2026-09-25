@@ -40,8 +40,10 @@ const server = spawn(process.execPath, [path.join(here, "..", "src", "server.js"
     BOOK_FACTORY_DATA: dataDir,
     BOOK_FACTORY_DRY_RUN: "1",
     // Slow the stub down enough that a human-speed interaction - watching the
-    // bar, clicking pause - is actually possible to test.
-    BOOK_FACTORY_STUB_DELAY_MS: "12",
+    // bar, reading a chapter as it streams, clicking pause - is actually
+    // possible to test. Too fast and the book finishes before the assertions
+    // about a run in progress can run at all.
+    BOOK_FACTORY_STUB_DELAY_MS: "40",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -120,6 +122,68 @@ try {
     const states = await page.locator(".chapter-chip").evaluateAll((els) => els.map((el) => el.dataset.state));
     if (!states.includes("waiting")) throw new Error(`no waiting chapters: ${states.join(" ")}`);
     return states.slice(0, 6).join(" ");
+  });
+
+  await check("the chapter being written opens as a live preview", async () => {
+    // The chip for the chapter in flight used to be clickable and open
+    // nothing, because the file only exists once the chapter finishes.
+    await page.waitForFunction(() => document.querySelector('.chapter-chip[data-state="writing"]'), null, { timeout: 60000 });
+    await page.locator('.chapter-chip[data-state="writing"]').first().click();
+    await page.waitForSelector("#chapterLive", { timeout: 15000 });
+
+    const text = await page.locator("#chapterLive").innerText();
+    if (text.trim().length < 40) throw new Error(`preview is empty (${text.length} chars)`);
+    if (await page.locator('[data-editor="save"]').count()) {
+      throw new Error("a Save button on a chapter the stream is about to overwrite");
+    }
+    return `${text.trim().length} chars, read-only`;
+  });
+
+  await check("the preview grows as the words arrive", async () => {
+    const read = async () => {
+      if (!(await page.locator("#chapterLive").count())) return null;
+      return (await page.locator("#chapterLive").innerText()).length;
+    };
+
+    const before = await read();
+    if (before === null) throw new Error("the chapter landed before it could be watched");
+
+    // Poll rather than sleep a fixed time: pass as soon as it has grown, and
+    // do not fail merely because the chapter finished while watching.
+    for (let i = 0; i < 20; i += 1) {
+      await page.waitForTimeout(250);
+      const now = await read();
+      if (now === null) return `${before} chars, then the chapter landed`;
+      if (now > before) return `${before} → ${now} chars`;
+    }
+    throw new Error(`never grew past ${before} chars`);
+  });
+
+  await check("an edit to a chapter still being written is refused, not swallowed", async () => {
+    // Accepting it would mean losing it seconds later when the stream
+    // overwrites the file. The chapter in flight changes as the run proceeds,
+    // so re-read which one it is on each attempt rather than racing a stale id.
+    for (let i = 0; i < 6; i += 1) {
+      const state = await (await page.request.get(`${base}/api/state`)).json();
+      const run = state.activeRun;
+      if (!run || !run.currentChapter) break;
+
+      const response = await page.request.post(`${base}/api/runs/${run.bookId}/chapters/${run.currentChapter}`, {
+        data: { body: "my words" },
+      });
+      if (response.status() === 409) return (await response.json()).error;
+      // A 200 means that chapter landed between the read and the post. Try
+      // again against whichever chapter is being written now.
+      await page.waitForTimeout(300);
+    }
+    throw new Error("a chapter being written accepted an edit that the stream would overwrite");
+  });
+
+  await check("the preview hands over to the editor when the chapter lands", async () => {
+    await page.waitForSelector("#chapterBody", { timeout: 120000 });
+    if (await page.locator("#chapterLive").count()) throw new Error("still showing the live pane");
+    if (!(await page.locator('[data-editor="save"]').count())) throw new Error("no Save button after it landed");
+    return `${(await page.locator("#chapterBody").inputValue()).length} chars, now editable`;
   });
 
   await check("pause says it will finish the current chapter first", async () => {

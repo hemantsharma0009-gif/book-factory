@@ -63,6 +63,8 @@ export async function draftChapters({ plan, genre, wordsPerChapter, onProgress, 
  *                              words away.
  * @param {function} onChapter  awaited after each chapter, so the caller can
  *                              write it to disk before the next one starts.
+ * @param {function} onDelta    called with { chapter, words, text } on every
+ *                              fragment; `text` is the chapter so far.
  */
 export async function draftChaptersLive({
   plan,
@@ -94,8 +96,9 @@ export async function draftChaptersLive({
       break;
     }
 
-    onChapterStart(chapter);
+    await onChapterStart(chapter);
     let words = 0;
+    let sofar = "";
 
     const body = await streamProse({
       system: bible,
@@ -105,7 +108,10 @@ export async function draftChaptersLive({
         // Counting whitespace runs is close enough for a progress bar and
         // costs nothing; a real word count happens once the chapter lands.
         words += (fragment.match(/\s+/g) || []).length;
-        onDelta({ chapter, words });
+        sofar += fragment;
+        // `text` is the whole chapter so far, so the caller can persist it and
+        // let somebody read the prose while it is still arriving.
+        onDelta({ chapter, words, text: sofar });
       },
     });
 

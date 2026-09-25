@@ -93,3 +93,46 @@ export function wasEdited(onDisk, generated) {
 export function hashBody(text) {
   return createHash("sha1").update(String(text || "").trim()).digest("hex").slice(0, 16);
 }
+
+/**
+ * The chapter being written, as far as it has got.
+ *
+ * A separate file from the finished chapter, and deliberately not the same
+ * name: `readAllChapters` must never pick a half-written chapter up and put it
+ * in a manuscript or an EPUB. This exists only to be read on screen while the
+ * words are arriving.
+ *
+ * Written from a stream, so it is always a prefix of the finished chapter -
+ * never a different version of it.
+ */
+const partialFile = (number) => `ch-${String(number).padStart(3, "0")}.partial.md`;
+
+export async function writePartial(bookId, number, text) {
+  const dir = dirFor(bookId);
+  await fs.mkdir(dir, { recursive: true });
+  const file = path.join(dir, partialFile(number));
+  const tmp = `${file}.tmp`;
+  await fs.writeFile(tmp, String(text));
+  await fs.rename(tmp, file);
+}
+
+export async function readPartial(bookId, number) {
+  try {
+    const raw = await fs.readFile(path.join(dirFor(bookId), partialFile(number)), "utf8");
+    return { number, body: raw, words: countWords(raw), partial: true };
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+/**
+ * Cleared when the chapter lands, and again before it is rewritten.
+ *
+ * A stale partial left by a crash would otherwise be served as a preview of a
+ * chapter that is about to be written from scratch - showing you text that is
+ * not going to be in the book.
+ */
+export async function clearPartial(bookId, number) {
+  await fs.rm(path.join(dirFor(bookId), partialFile(number)), { force: true });
+}

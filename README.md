@@ -198,6 +198,12 @@ once it has been forwarded to somebody.
 | **Stop** | ends the run and keeps everything written so far |
 | **Download the book so far** | EPUB, or plain text for editing |
 
+**Click the chapter being written and you watch it arrive** — the prose streams
+into a read-only pane, word count ticking, and the pane turns into an editor by
+itself the moment the chapter lands. It is read-only while it streams because
+the next fragment would overwrite anything you typed; an edit sent to a chapter
+in flight is refused rather than quietly lost.
+
 While it is paused, click any chapter to read it and edit it in place. **A
 chapter you edit becomes yours**: the editorial pass skips it when the run
 resumes, so nothing rewrites your words. That holds whether you edit it in the

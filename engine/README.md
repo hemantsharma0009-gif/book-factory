@@ -58,6 +58,12 @@ Pausing takes effect at a chapter boundary rather than mid-sentence, because
 abandoning a half-written chapter means paying for the tokens and throwing the
 words away.
 
+**You can read a chapter while it is being written.** Clicking the chapter in
+flight opens the prose so far, growing as it arrives; it becomes editable by
+itself once the chapter finishes. The half-written text lives in
+`chapters/ch-007.partial.md`, which nothing that assembles a manuscript or an
+EPUB ever reads — a book must never ship half a sentence.
+
 **While it is paused you can edit.** Open a chapter in the console, or edit
 `chapters/ch-003.md` in any editor. A chapter whose text no longer matches what
 the engine wrote is marked as yours, and the editorial pass **skips it** — an
@@ -303,7 +309,7 @@ src/server.js          review console (loopback only)
 ## Tests
 
 ```bash
-npm test                                   # 126 unit tests
+npm test                                   # 128 unit tests
 node test/console-ui.mjs                   # the progress panel, in a real browser
 node test/validate-epub.mjs <file.epub>    # structural EPUB validation
 ```

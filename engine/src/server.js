@@ -19,7 +19,7 @@ import {
   saveChapterEdit,
 } from "./pipeline.js";
 import * as runState from "./run-state.js";
-import { readChapter } from "./chapters.js";
+import { readChapter, readPartial } from "./chapters.js";
 import { describeImageSetup, assertUsable, providers as imageProviders } from "./illustrate/index.js";
 import { buildKdpPack, writeKdpPack } from "./publish/kdp.js";
 import { publishToGumroad } from "./publish/gumroad.js";
@@ -276,15 +276,44 @@ const routes = {
   },
 
   "GET /api/runs/:id/chapters/:n": async (req, res, { id, n }) => {
-    const chapter = await readChapter(id, Number(n));
-    if (!chapter) return json(res, 404, { error: "Not written yet" });
-    json(res, 200, chapter);
+    const number = Number(n);
+    const chapter = await readChapter(id, number);
+    if (chapter) return json(res, 200, { ...chapter, partial: false });
+
+    // Nothing finished, but this may be the chapter being written right now.
+    // Serving the prose so far is the whole point of watching a book being
+    // written; `partial` tells the console to show it read-only and keep
+    // asking for more.
+    const partial = await readPartial(id, number);
+    if (partial) {
+      const run = await runState.readRun(id);
+      const entry = run?.chapters.find((c) => c.number === number);
+      return json(res, 200, {
+        ...partial,
+        title: entry?.title || `Chapter ${number}`,
+        // no-store: this changes every few hundred milliseconds.
+        partial: true,
+      });
+    }
+
+    json(res, 404, { error: "Not written yet" });
   },
 
   "POST /api/runs/:id/chapters/:n": async (req, res, { id, n }) => {
     const body = await readBody(req);
     if (typeof body.body !== "string" || !body.body.trim()) {
       return json(res, 400, { error: "Nothing to save." });
+    }
+
+    // A chapter still being written will be overwritten by the stream a few
+    // seconds from now, so accepting an edit to it would quietly throw the
+    // edit away. Saying so is better than losing it.
+    const run = await runState.readRun(id);
+    const entry = run?.chapters.find((c) => c.number === Number(n));
+    if (entry?.streaming && !entry.done) {
+      return json(res, 409, {
+        error: "This chapter is still being written. Pause the run, then edit it.",
+      });
     }
     try {
       const result = await saveChapterEdit({

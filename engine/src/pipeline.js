@@ -62,6 +62,16 @@ export function disclosureFor({ imagesGenerated }) {
 
 const countWords = chapters.countWords;
 
+/**
+ * How often the chapter being written is flushed to disk for previewing.
+ *
+ * Fragments arrive many times a second; a person reading along cannot tell
+ * 400ms from instant, and writing every fragment would turn a preview into a
+ * disk-bound bottleneck on the run itself.
+ */
+const PARTIAL_WRITE_MS = 400;
+let lastPartialWrite = 0;
+
 /** Phases that will actually run, so the progress bar reaches 100%. */
 function phasesFor({ images, editorial }) {
   const active = ["planning"];
@@ -272,8 +282,14 @@ async function runPipeline({ bookId, log }) {
         language,
         existing: onDisk,
         shouldStop: () => checkStop(bookId),
-        onChapterStart: (chapter) => {
-          runState.patchRun(bookId, (r) => {
+        onChapterStart: async (chapter) => {
+          // Any partial left by a crashed earlier attempt is not a preview of
+          // this chapter - it is text that is about to be replaced.
+          await chapters.clearPartial(bookId, chapter.number);
+          // So the first fragment of every chapter is flushed immediately and
+          // the preview appears as soon as the words do.
+          lastPartialWrite = 0;
+          await runState.patchRun(bookId, (r) => {
             r.currentChapter = chapter.number;
             const entry = r.chapters.find((c) => c.number === chapter.number);
             if (entry) entry.streaming = true;
@@ -281,7 +297,7 @@ async function runPipeline({ bookId, log }) {
           });
           log(`Chapter ${chapter.number}: ${chapter.title}`);
         },
-        onDelta: ({ chapter, words }) => {
+        onDelta: ({ chapter, words, text }) => {
           // Cheap and frequent: the bar has to move while a chapter is being
           // written, not only when one finishes.
           runState.patchRun(bookId, (r) => {
@@ -291,11 +307,23 @@ async function runPipeline({ bookId, log }) {
             const finished = r.chapters.filter((c) => c.done).length;
             r.phaseFraction = (finished + Math.min(0.95, words / (r.wordsPerChapter || 2200))) / r.totalChapters;
           });
+
+          // The prose itself, so it can be read while it is being written.
+          // Throttled: fragments arrive many times a second and the file is
+          // only ever read by a person, who cannot tell the difference.
+          const now = Date.now();
+          if (now - lastPartialWrite < PARTIAL_WRITE_MS) return;
+          lastPartialWrite = now;
+          chapters.writePartial(bookId, chapter.number, text).catch(() => {
+            // A preview is a convenience. Failing to write one must never
+            // interrupt a chapter that is being paid for.
+          });
         },
         onChapter: async (chapter) => {
           // Disk first, then the run record. If the process dies between the
           // two, a resume finds the chapter and re-derives the record.
           await chapters.writeChapter(bookId, chapter);
+          await chapters.clearPartial(bookId, chapter.number);
           const words = countWords(chapter.body);
           await runState.patchRun(bookId, (r) => {
             const entry = r.chapters.find((c) => c.number === chapter.number);

@@ -71,6 +71,13 @@
     border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: Georgia, serif;
     font-size: 14px; line-height: 1.6; resize: vertical; }
   .editor-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .chapter-live { max-height: 340px; overflow: auto; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 14px 16px; font-family: Georgia, serif; font-size: 14px; line-height: 1.65; }
+  .chapter-live p { margin: 0 0 12px; }
+  .chapter-live p:last-child::after { content: "▌"; opacity: .55; margin-left: 2px; }
+  .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--blue);
+    margin-left: 8px; vertical-align: middle; animation: breathe 1.6s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
   .gen-options { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; max-width: 100%; }
   /* A select is as wide as its longest option unless it is told otherwise, and
      "Batch — half price, no pausing" is wide enough to push the whole page
@@ -361,6 +368,7 @@ async function renderDetail(book) {
 
 const RUNNING = new Set(["running"]);
 let editingChapter = null;
+let previewChapter = null;
 let pollTimer = null;
 
 function renderRun() {
@@ -419,6 +427,7 @@ function renderRun() {
   $("runLog").scrollTop = $("runLog").scrollHeight;
 
   if (live) startPolling(); else stopPolling();
+  if (previewChapter != null) refreshPreview();
 }
 
 function shortTitle(title) {
@@ -449,25 +458,81 @@ async function openChapter(number) {
   const run = state.activeRun;
   if (!run) return;
   const chapter = await api(`/api/runs/${run.bookId}/chapters/${number}`);
-  editingChapter = number;
+  renderChapterPane(chapter, number);
+  $("chapterEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/**
+ * Two panes, one function.
+ *
+ * A chapter that is still being written is shown read-only: the stream will
+ * overwrite it within seconds, so offering a Save button would be offering to
+ * throw an edit away.
+ */
+function renderChapterPane(chapter, number) {
+  const live = Boolean(chapter.partial);
+  editingChapter = live ? null : number;
+  previewChapter = live ? number : null;
 
   $("chapterEditor").innerHTML = `
     <div class="chapter-editor">
       <div class="editor-head">
         <div>
           <strong>${esc(chapter.title)}</strong>
-          <span class="small muted"> — ${chapter.words.toLocaleString()} words</span>
+          <span class="small muted"> — <span id="chapterWords">${chapter.words.toLocaleString()}</span> words${live ? " so far" : ""}</span>
+          ${live ? '<span class="live-dot" title="being written now"></span>' : ""}
         </div>
         <div class="run-actions">
           <button class="btn" data-editor="close">Close</button>
-          <button class="btn primary" data-editor="save">Save my edit</button>
+          ${live ? "" : '<button class="btn primary" data-editor="save">Save my edit</button>'}
         </div>
       </div>
-      <textarea id="chapterBody" spellcheck="true"></textarea>
-      <p class="small muted" style="margin:8px 0 0">Saving marks this chapter as yours. The editorial pass will skip it, so nothing rewrites your words.</p>
+      ${live
+        ? `<div class="chapter-live" id="chapterLive"></div>`
+        : `<textarea id="chapterBody" spellcheck="true"></textarea>`}
+      <p class="small muted" style="margin:8px 0 0">${live
+        ? "Being written now. Pause the run if you want to edit this one."
+        : "Saving marks this chapter as yours. The editorial pass will skip it, so nothing rewrites your words."}</p>
     </div>`;
-  $("chapterBody").value = chapter.body;
-  $("chapterEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  if (live) paintLive(chapter.body);
+  else $("chapterBody").value = chapter.body;
+}
+
+function paintLive(text) {
+  const box = $("chapterLive");
+  if (!box) return;
+  // Stay pinned to the newest words unless you have scrolled up to re-read
+  // something, in which case yanking you back would be worse than useless.
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.innerHTML = String(text)
+    .split(/\n{2,}/)
+    .map((block) => (block.trim() ? `<p>${esc(block)}</p>` : ""))
+    .join("");
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+/** Keeps a live chapter moving, and swaps to the editor when it finishes. */
+async function refreshPreview() {
+  const run = state.activeRun;
+  if (!run || previewChapter == null) return;
+  const number = previewChapter;
+
+  let chapter;
+  try {
+    chapter = await api(`/api/runs/${run.bookId}/chapters/${number}`);
+  } catch {
+    return; // the chapter may be between its partial and its final file
+  }
+
+  if (chapter.partial) {
+    const words = $("chapterWords");
+    if (words) words.textContent = chapter.words.toLocaleString();
+    paintLive(chapter.body);
+    return;
+  }
+  // It landed. Hand over to the editable version, in place.
+  renderChapterPane(chapter, number);
 }
 
 async function saveChapter() {
@@ -481,6 +546,7 @@ async function saveChapter() {
   toast(`Chapter ${editingChapter} saved as yours.`, "ok");
   $("chapterEditor").innerHTML = "";
   editingChapter = null;
+  previewChapter = null;
   await refresh();
 }
 
@@ -495,6 +561,7 @@ document.addEventListener("click", async (event) => {
   if (editorAction === "close") {
     $("chapterEditor").innerHTML = "";
     editingChapter = null;
+    previewChapter = null;
     return;
   }
   if (editorAction === "save") {

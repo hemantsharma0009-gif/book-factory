@@ -1980,3 +1980,45 @@ test("the upload sheet warns about file size before you list, not after", () => 
   }).warnings;
   assert.deepEqual(light, [], `a small book should not be warned: ${light.join("; ")}`);
 });
+
+test("a half-written chapter is readable on screen but never reaches the book", async () => {
+  // The whole risk of previewing a chapter mid-stream is that the partial
+  // leaks into a manuscript or an EPUB and ships half a sentence.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bf-partial-"));
+  process.env.BOOK_FACTORY_DATA = dir;
+
+  try {
+    await __chapters.writeChapter("bk_p", { number: 1, title: "One", body: "A finished chapter." });
+    await __chapters.writePartial("bk_p", 2, "A chapter that stops mid-");
+
+    const preview = await __chapters.readPartial("bk_p", 2);
+    assert.equal(preview.body, "A chapter that stops mid-");
+    assert.equal(preview.partial, true);
+
+    // The only two ways text gets into a book:
+    const all = await __chapters.readAllChapters("bk_p", 5);
+    assert.deepEqual(all.map((c) => c.number), [1], "a partial was picked up as a chapter");
+    assert.doesNotMatch(__chapters.assembleManuscript(all), /stops mid-/);
+
+    // And it is cleared once the real chapter lands.
+    await __chapters.writeChapter("bk_p", { number: 2, title: "Two", body: "A chapter that stops mid-sentence no longer." });
+    await __chapters.clearPartial("bk_p", 2);
+    assert.equal(await __chapters.readPartial("bk_p", 2), null);
+    assert.equal((await __chapters.readAllChapters("bk_p", 5)).length, 2);
+  } finally {
+    delete process.env.BOOK_FACTORY_DATA;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("clearing a partial that was never there is not an error", async () => {
+  // It runs before every chapter, including the first.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bf-partial2-"));
+  process.env.BOOK_FACTORY_DATA = dir;
+  try {
+    await assert.doesNotReject(() => __chapters.clearPartial("bk_missing", 7));
+  } finally {
+    delete process.env.BOOK_FACTORY_DATA;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
