@@ -32,6 +32,7 @@ export const PHASES = [
   { id: "briefing", label: "Art direction", weight: 2 },
   { id: "drafting", label: "Writing chapters", weight: 55 },
   { id: "editing", label: "Editorial pass", weight: 22 },
+  { id: "reviewing", label: "Reading it back", weight: 5 },
   { id: "illustrating", label: "Making the artwork", weight: 11 },
   { id: "packaging", label: "Assembling the book", weight: 5 },
 ];

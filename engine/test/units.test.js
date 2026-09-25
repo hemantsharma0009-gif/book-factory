@@ -31,6 +31,7 @@ import * as __illustrate from "../src/illustrate/index.js";
 import { assertUsable } from "../src/illustrate/index.js";
 import { renderPhotoCover } from "../src/cover.js";
 import { disclosureFor, alsoByFor, __test as __pipeline } from "../src/pipeline.js";
+import { verifyQuotes, overallScore, formatScorecard } from "../src/agents/critic.js";
 
 test("genre rotation never repeats within the cooldown window", () => {
   const history = [];
@@ -1227,10 +1228,19 @@ test("the estimate scales with the work asked for", () => {
 });
 
 test("the estimate halves under the batch discount", () => {
+  // Measured on the token work alone. The scorecard is one realtime call and
+  // gets no discount, so including it would hide the thing being checked.
+  const price = { input: 2, output: 10 };
+  const batched = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, batch: true, scorecard: false });
+  const realtime = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, batch: false, scorecard: false });
+  assert.equal(Number((realtime.mid / batched.mid).toFixed(2)), 2);
+});
+
+test("the scorecard costs the same batched or not, because it is neither", () => {
   const price = { input: 2, output: 10 };
   const batched = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, batch: true });
   const realtime = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, batch: false });
-  assert.equal(Number((realtime.mid / batched.mid).toFixed(2)), 2);
+  assert.equal(batched.scorecard, realtime.scorecard);
 });
 
 test("the estimate accounts for the cached manuscript the editor reads", () => {
@@ -1615,11 +1625,12 @@ test("the KDP sheet answers the images question separately from the text one", (
 
 test("live mode is priced as the full-rate run it is", () => {
   const price = { input: 2, output: 10 };
-  const batch = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, batch: true });
-  const live = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, batch: false });
+  const batch = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, batch: true, scorecard: false });
+  const live = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, batch: false, scorecard: false });
 
   // The batch discount is exactly half, so quoting live at batch rates would
-  // understate what you are about to spend by a factor of two.
+  // understate what you are about to spend by a factor of two. Measured
+  // without the scorecard, which is realtime either way.
   assert.ok(Math.abs(live.mid - batch.mid * 2) < 1e-9, `${live.mid} vs ${batch.mid}`);
 });
 
@@ -1639,7 +1650,7 @@ test("pictures are a separate line on the estimate, not folded into the tokens",
 test("phases match the run that will actually happen", () => {
   assert.deepEqual(
     __pipeline.phasesFor({ images: "none", editorial: true }),
-    ["planning", "drafting", "editing", "packaging"],
+    ["planning", "drafting", "editing", "reviewing", "packaging"],
   );
   // Charts need no art direction; artwork does.
   assert.ok(!__pipeline.phasesFor({ images: "charts", editorial: true }).includes("briefing"));
@@ -2090,4 +2101,104 @@ test("a book with nothing to advertise gets no empty page", async () => {
   const zip = await JSZip.loadAsync(epub);
   assert.equal(zip.file("OEBPS/alsoby.xhtml"), null);
   assert.doesNotMatch(await zip.file("OEBPS/nav.xhtml").async("string"), /alsoby/);
+});
+
+/* ========================================================================
+ * The editorial scorecard: the thing that turns a two-hour read into fifteen
+ * minutes, and the check that stops it inventing evidence
+ * ====================================================================== */
+
+test("a quote that is really in the book verifies; an invented one does not", () => {
+  // A confident citation of a sentence that was never written is worse than no
+  // citation: it sends somebody hunting through a manuscript for text that
+  // does not exist.
+  const manuscript = "The work begins where most accounts leave off,\nin the unglamorous middle of the thing.";
+
+  const card = verifyQuotes(
+    {
+      verdict: "fix-first",
+      oneLine: "x",
+      scores: [],
+      weakest: [
+        { chapter: 1, quote: "The work begins where most accounts leave off", problem: "p", fix: "f" },
+        { chapter: 2, quote: "A sentence that appears nowhere in this book", problem: "p", fix: "f" },
+        { chapter: 3, quote: "too short", problem: "p", fix: "f" },
+      ],
+      strongest: { chapter: 1, quote: "in the unglamorous middle of the thing", why: "w" },
+    },
+    manuscript,
+  );
+
+  assert.equal(card.weakest[0].verified, true);
+  assert.equal(card.weakest[1].verified, false, "an invented quote passed verification");
+  assert.equal(card.weakest[2].verified, false, "a fragment too short to locate should not count as evidence");
+  assert.equal(card.strongest.verified, true);
+
+  // And nothing is dropped - the finding survives, marked.
+  assert.equal(card.weakest.length, 3);
+});
+
+test("re-wrapping and smart quotes are not treated as a different sentence", () => {
+  // Models re-wrap lines and normalise punctuation; they do not re-word. A
+  // verifier that failed on either would mark every real quote as invented.
+  const card = verifyQuotes(
+    {
+      verdict: "publish",
+      oneLine: "x",
+      scores: [],
+      weakest: [{ chapter: 1, quote: 'She said "the mechanism is the argument" and left.', problem: "p", fix: "f" }],
+      strongest: { chapter: 1, quote: "", why: "" },
+    },
+    "She said “the mechanism is the argument”\n   and left.",
+  );
+  assert.equal(card.weakest[0].verified, true);
+});
+
+test("the score is the whole range, not a rubber stamp", () => {
+  assert.equal(overallScore({ scores: [{ score: 5 }, { score: 5 }] }), 100);
+  assert.equal(overallScore({ scores: [{ score: 3 }, { score: 4 }, { score: 5 }] }), 80);
+  assert.equal(overallScore({ scores: [{ score: 1 }, { score: 1 }] }), 20);
+  assert.equal(overallScore({ scores: [] }), null);
+});
+
+test("the printed scorecard flags a finding whose quote was not found", () => {
+  const printed = formatScorecard({
+    verdict: "do-not-publish",
+    oneLine: "Structural problems.",
+    score: 30,
+    scores: [{ criterion: "voice", score: 2, note: "Hedging throughout." }],
+    weakest: [
+      { chapter: 4, quote: "a real sentence", problem: "vague", fix: "be specific", verified: true },
+      { chapter: 5, quote: "an invented sentence", problem: "vague", fix: "be specific", verified: false },
+    ],
+    strongest: { chapter: 1, quote: "the good bit", why: "concrete", verified: true },
+  });
+
+  assert.match(printed, /DO NOT PUBLISH/);
+  assert.match(printed, /30\/100/);
+  assert.match(printed, /not in the manuscript/, "an invented quote was printed as though it were evidence");
+  // The verdict must never read as a block on publishing.
+  assert.match(printed, /opinion, not a gate/);
+});
+
+test("the review phase is part of the run, and skipping it is too", () => {
+  assert.ok(__pipeline.phasesFor({ images: "none", editorial: true }).includes("reviewing"));
+  assert.ok(!__pipeline.phasesFor({ images: "none", editorial: true, scorecard: false }).includes("reviewing"));
+  // It reads the edited book, so it comes after editing and before packaging.
+  const phases = __pipeline.phasesFor({ images: "artwork", editorial: true });
+  assert.ok(phases.indexOf("reviewing") > phases.indexOf("editing"));
+  assert.ok(phases.indexOf("reviewing") < phases.indexOf("packaging"));
+});
+
+test("the scorecard is priced into the estimate before the money is spent", () => {
+  const price = { input: 2, output: 10 };
+  const withCard = estimateRun({ chapters: 12, wordsPerChapter: 2200, price });
+  const without = estimateRun({ chapters: 12, wordsPerChapter: 2200, price, scorecard: false });
+
+  assert.ok(withCard.scorecard > 0.05 && withCard.scorecard < 0.2, `$${withCard.scorecard}`);
+  assert.equal(without.scorecard, 0);
+  // A fixed, known cost, so it widens the band by the same amount at both ends
+  // rather than being stretched by the output-length uncertainty.
+  assert.ok(Math.abs((withCard.low - without.low) - withCard.scorecard) < 1e-9);
+  assert.ok(Math.abs((withCard.high - without.high) - withCard.scorecard) < 1e-9);
 });

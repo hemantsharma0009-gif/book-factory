@@ -161,6 +161,8 @@ export function estimateRun({
    *  separate line rather than folded into the token maths. */
   images = 0,
   imageCostUsd = 0,
+  /** The editorial scorecard: one realtime call that reads the whole book. */
+  scorecard = true,
 }) {
   const discount = batch ? 0.5 : 1;
   const outputPerChapter = wordsPerChapter * TOKENS_PER_WORD;
@@ -178,6 +180,15 @@ export function estimateRun({
   const editCacheWrite = editorial ? manuscript : 0;
   const editCacheRead = editorial ? chapters * manuscript : 0;
 
+  // The scorecard reads the finished manuscript once and writes a page of
+  // notes. One call, read once - so it is deliberately NOT cached: a cache
+  // write costs 1.25x the input rate for a prefix nothing reads a second time.
+  // It is also not batched, because it is the thing you are waiting for.
+  const SCORECARD_OUTPUT_TOKENS = 2500;
+  const scorecardUsd = scorecard
+    ? (draftOutput / 1e6) * price.input + (SCORECARD_OUTPUT_TOKENS / 1e6) * price.output
+    : 0;
+
   const usd =
     ((draftInput / 1e6) * price.input +
       ((draftOutput + editOutput) / 1e6) * price.output +
@@ -190,9 +201,10 @@ export function estimateRun({
 
   // A band rather than a point, because the model decides how long to write.
   return {
-    low: usd * 0.75 + imagesUsd,
-    high: usd * 1.4 + imagesUsd,
-    mid: usd + imagesUsd,
+    low: usd * 0.75 + imagesUsd + scorecardUsd,
+    high: usd * 1.4 + imagesUsd + scorecardUsd,
+    mid: usd + imagesUsd + scorecardUsd,
+    scorecard: scorecardUsd,
     words: usd,
     images: imagesUsd,
     imageCount: images,

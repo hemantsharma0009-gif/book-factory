@@ -263,6 +263,69 @@ try {
     return "reader untouched across two refreshes";
   });
 
+  await check("the verdict on the book is the first thing you see about it", async () => {
+    // The scorecard exists to turn a two-hour read into a fifteen-minute one.
+    // Buried under the manuscript it would do the opposite.
+    await page.locator(".queue-item").first().click();
+    await page.waitForTimeout(900);
+
+    const card = page.locator(".score");
+    if (!(await card.count())) throw new Error("no scorecard on a finished book");
+
+    const above = (await card.boundingBox()).y < (await page.locator("#reader").boundingBox()).y;
+    if (!above) throw new Error("the scorecard sits below the manuscript");
+
+    const criteria = await page.locator(".score-criteria .score-criterion").count();
+    if (criteria !== 6) throw new Error(`${criteria} criteria scored`);
+
+    const quotes = await page.locator(".score-quote").allInnerTexts();
+    if (!quotes.length || !quotes.every((q) => q.length > 20)) {
+      throw new Error("findings without real quotes are not worth reading");
+    }
+
+    const verdict = await card.getAttribute("data-verdict");
+    return `${verdict}, ${criteria} criteria, ${quotes.length} quoted passages`;
+  });
+
+  await check("a scorecard cannot be used to smuggle markup into the console", async () => {
+    // Every word of a scorecard comes from a model that has just read a
+    // manuscript, and a manuscript may contain anything. Inject it for real -
+    // a test that only checks the benign case is not a test.
+    const manifest = path.join(dataDir, "library.json");
+    const library = JSON.parse(await fs.readFile(manifest, "utf8"));
+    library.books[0].scorecard = {
+      verdict: "fix-first",
+      oneLine: '<img src=x onerror="window.__xss=1">',
+      score: 40,
+      scores: [{ criterion: "voice", score: 2, note: '</span><script>window.__xss=1</script>' }],
+      weakest: [{
+        chapter: 1,
+        quote: '</p><script>window.__xss=1</script>',
+        problem: "<b>bold</b>",
+        fix: "be specific",
+        verified: false,
+      }],
+      strongest: { chapter: 1, quote: "the good bit", why: "concrete", verified: true },
+    };
+    await fs.writeFile(manifest, JSON.stringify(library, null, 2));
+
+    await page.reload();
+    await page.waitForTimeout(900);
+    await page.locator(".queue-item").first().click();
+    await page.waitForTimeout(800);
+
+    if (await page.evaluate(() => window.__xss)) throw new Error("scorecard text executed as script");
+
+    const line = await page.locator(".score-line").innerText();
+    if (!line.includes("<img")) throw new Error(`not shown literally: ${line}`);
+
+    // And an unverified quote must be labelled, not quietly presented as evidence.
+    if (!(await page.locator(".score-unverified").count())) {
+      throw new Error("an invented quote was shown without a warning");
+    }
+    return "escaped, and the invented quote is flagged";
+  });
+
   const phone = await browser.newPage({ ...devices["iPhone 13"] });
   await phone.goto(`${base}/`);
   await phone.waitForTimeout(800);

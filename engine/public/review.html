@@ -78,6 +78,31 @@
   .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--blue);
     margin-left: 8px; vertical-align: middle; animation: breathe 1.6s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+  /* The scorecard sits above the manuscript because it is what turns a
+     two-hour read into a fifteen-minute one. */
+  .score { border: 1px solid var(--border); border-left-width: 4px; border-radius: var(--radius-sm);
+    background: var(--panel-2); padding: 14px 16px; margin: 0 0 16px; }
+  .score[data-verdict="publish"] { border-left-color: var(--green); }
+  .score[data-verdict="fix-first"] { border-left-color: var(--yellow); }
+  .score[data-verdict="do-not-publish"] { border-left-color: var(--red); }
+  .score-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .score-verdict { font-weight: 800; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; }
+  .score[data-verdict="publish"] .score-verdict { color: var(--green); }
+  .score[data-verdict="fix-first"] .score-verdict { color: var(--yellow); }
+  .score[data-verdict="do-not-publish"] .score-verdict { color: var(--red); }
+  .score-num { margin-left: auto; font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .score-line { margin: 6px 0 12px; color: var(--text-dim); font-size: 13px; }
+  .score-criteria { display: grid; grid-template-columns: auto auto 1fr; gap: 4px 10px; font-size: 11.5px; align-items: baseline; }
+  .score-criterion { color: var(--muted); text-transform: capitalize; }
+  .score-bar { font-family: ui-monospace, monospace; letter-spacing: 1px; }
+  .score-note { color: var(--text-dim); }
+  .score-findings { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+  .score-findings li { border-top: 1px solid var(--border-soft); padding-top: 11px; }
+  .score-quote { font-family: Georgia, serif; font-style: italic; color: var(--text); margin: 5px 0; line-height: 1.5; }
+  .score-fix { font-size: 12px; color: var(--text-dim); }
+  .score-unverified { font-size: 11.5px; color: var(--red); }
+  .score-foot { font-size: 11.5px; color: var(--muted); margin: 14px 0 0; }
+
   .gen-options { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; max-width: 100%; }
   /* A select is as wide as its longest option unless it is told otherwise, and
      "Batch — half price, no pausing" is wide enough to push the whole page
@@ -330,6 +355,8 @@ async function renderDetail(book) {
     <p class="small" style="white-space:pre-wrap">${esc(l.description)}</p>
     <div class="chips" style="margin:10px 0">${l.keywords.map((k) => `<span class="chip">${esc(k)}</span>`).join("")}</div>
 
+    ${scorecardHtml(book.scorecard)}
+
     <h3 style="margin-top:18px">Manuscript</h3>
     <div class="reader" id="reader" lang="${esc(book.language || "en")}"><p class="muted small">Loading…</p></div>
 
@@ -370,6 +397,57 @@ const RUNNING = new Set(["running"]);
 let editingChapter = null;
 let previewChapter = null;
 let pollTimer = null;
+
+/**
+ * What an editor made of the book, above the manuscript.
+ *
+ * Quotes are the point: "chapter 7 is weak" sends you to re-read a chapter, a
+ * sentence sends you to the paragraph. A quote the engine could not find in
+ * the manuscript is labelled as such rather than hidden — an invented citation
+ * is a fact about how much to trust the rest of the card.
+ */
+function scorecardHtml(card) {
+  if (!card) return "";
+
+  const banner = {
+    publish: "Publish — it would go out as it stands",
+    "fix-first": "Fix first — publishable once these are fixed",
+    "do-not-publish": "Do not publish — the problems are structural",
+  }[card.verdict] || card.verdict;
+
+  const criteria = (card.scores || []).map((row) =>
+    `<span class="score-criterion">${esc(row.criterion)}</span>` +
+    `<span class="score-bar">${"█".repeat(row.score)}${"·".repeat(5 - row.score)}</span>` +
+    `<span class="score-note">${esc(row.note)}</span>`
+  ).join("");
+
+  const findings = (card.weakest || []).map((f, i) =>
+    `<li>
+      <div class="small muted">${i + 1}. Chapter ${Number(f.chapter)} — ${esc(f.problem)}</div>
+      <p class="score-quote">“${esc(f.quote)}”</p>
+      ${f.verified === false ? '<p class="score-unverified">That sentence is not in the manuscript — this finding may be invented.</p>' : ""}
+      <p class="score-fix">→ ${esc(f.fix)}</p>
+    </li>`
+  ).join("");
+
+  const best = card.strongest?.quote
+    ? `<li>
+        <div class="small muted">Best passage — chapter ${Number(card.strongest.chapter)}: ${esc(card.strongest.why)}</div>
+        <p class="score-quote">“${esc(card.strongest.quote)}”</p>
+      </li>`
+    : "";
+
+  return `<div class="score" data-verdict="${esc(card.verdict)}">
+    <div class="score-head">
+      <span class="score-verdict">${esc(banner)}</span>
+      ${card.score != null ? `<span class="score-num">${Number(card.score)}<span class="small muted">/100</span></span>` : ""}
+    </div>
+    <p class="score-line">${esc(card.oneLine)}</p>
+    <div class="score-criteria">${criteria}</div>
+    <ul class="score-findings">${findings}${best}</ul>
+    <p class="score-foot">An opinion, not a gate. Nothing publishes until you approve it.</p>
+  </div>`;
+}
 
 function renderRun() {
   const run = state.activeRun;

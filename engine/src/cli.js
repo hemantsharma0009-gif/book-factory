@@ -39,6 +39,7 @@ import { buildDashboardExport } from "./dashboard-export.js";
 import { rebuildBook, manuscriptIsNewer } from "./rebuild.js";
 import { economicsFor, estimateRun } from "./economics.js";
 import * as runState from "./run-state.js";
+import { formatScorecard } from "./agents/critic.js";
 import { describeImageSetup, getProvider, assertUsable, DEFAULT_IMAGE_COST_USD } from "./illustrate/index.js";
 import readline from "node:readline/promises";
 
@@ -85,6 +86,7 @@ async function main() {
       // unattended kind - the console defaults the other way.
       const mode = flag("live") ? "live" : String(flag("mode", "batch"));
       const editorial = !flag("no-edit");
+      const scorecard = !flag("no-score");
 
       // Fail on a missing image key here, before the first token is spent.
       assertUsable(images, imageDriver);
@@ -96,6 +98,7 @@ async function main() {
         assumeYes: Boolean(flag("yes")),
         mode,
         editorial,
+        scorecard,
         images: getProvider(images).costPerImage ? Math.ceil(illustrated / imageEvery) + 1 : 0,
         imageCostUsd: getProvider(images).costPerImage,
       }))) {
@@ -113,6 +116,7 @@ async function main() {
         imageEvery,
         mode,
         editorial,
+        scorecard,
         author: String(flag("author", "Book Factory Studio")),
         language: String(flag("language", DEFAULTS.language)),
         sample: sampleFlag ? Number(sampleFlag === true ? 2 : sampleFlag) : 0,
@@ -136,6 +140,7 @@ async function main() {
       // book without the instructions for publishing it.
       await deliverBook({ id: book.id, log });
 
+      if (book.scorecard) log(formatScorecard(book.scorecard));
       await reportEconomics(book.id, log);
 
       log(`\nArtifacts: ${store.bookDir(book.id)}`);
@@ -159,6 +164,7 @@ async function main() {
       }
       await writePack(book.id);
       await deliverBook({ id: book.id, log });
+      if (book.scorecard) log(formatScorecard(book.scorecard));
       await reportEconomics(book.id, log);
       log(`\nReview it, then: node src/cli.js approve ${book.id}`);
       break;
@@ -558,6 +564,7 @@ trust, and never with the port forwarded to the internet.`);
                                  batch (the default) is half price but cannot
                                  be paused and shows nothing until it ends
            [--no-edit]           skip the editorial pass
+           [--no-score]          skip the editorial scorecard (about $0.10)
            [--sample n]          write only the first n chapters (default 2) to
                                  judge the prose cheaply before a full run
   runs                            unfinished books, and how to resume each
@@ -699,6 +706,7 @@ async function confirmSpend({
   assumeYes,
   mode = "batch",
   editorial = true,
+  scorecard = true,
   images = 0,
   imageCostUsd = 0,
 }) {
@@ -710,6 +718,7 @@ async function confirmSpend({
     price,
     batch,
     editorial,
+    scorecard,
     images,
     imageCostUsd,
   });
@@ -724,6 +733,9 @@ async function confirmSpend({
   }
   if (images) {
     log(`Plus ${images} generated picture(s) at about $${imageCostUsd.toFixed(2)} each, billed by your image provider.`);
+  }
+  if (estimate.scorecard) {
+    log(`Plus about $${estimate.scorecard.toFixed(2)} to read it back and score it (--no-score to skip).`);
   }
   // A dry run spends nothing, but the figure is the reason to do one - it is
   // what the real run would cost, seen before committing to it.
