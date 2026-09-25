@@ -34,6 +34,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as store from "./store.js";
 import { breakEven, DELIVERY_FEE_PER_MB } from "./economics.js";
+import { formatScorecard } from "./agents/critic.js";
 
 const run = promisify(execFile);
 
@@ -113,7 +114,10 @@ Status: ${String(book.status || "unknown").replace(/_/g, " ")}
       : ""
   }
 
-WHAT IS IN HERE
+${book.scorecard ? `WHAT AN EDITOR MADE OF IT
+${formatScorecard(book.scorecard, { width: 70 })}
+
+` : ""}WHAT IS IN HERE
 
   *.epub                 the book. Upload this to KDP, and to Gumroad.
   KDP-UPLOAD-SHEET.md    every field the KDP form asks for, in its order.

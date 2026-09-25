@@ -319,6 +319,25 @@ listing on a store the book is not on is worse than recording nothing.
 "Start" marks a job in progress and survives a reload, so a KDP upload waiting
 on review is visibly different from one you have not begun.
 
+## An editor reads it before you do
+
+The bottleneck was never cost or speed — it was that judging a 26,000-word book
+takes about two hours. After the editorial pass, one call reads the finished
+manuscript and returns a verdict (`publish`, `fix-first`, `do-not-publish`), a
+score per criterion, the **five weakest passages quoted verbatim** with what is
+wrong and how to fix each, and the single best passage.
+
+Approval becomes fifteen minutes: read the flagged passages and the first
+chapter.
+
+Every quote is checked against the manuscript. A model asked for evidence will
+occasionally invent a plausible sentence, and a citation of text that does not
+exist would send you hunting through a book for it — so anything that does not
+match is labelled as unverified rather than hidden.
+
+It is advisory. It cannot block publishing, and nothing goes out until you
+approve it. About $0.10 a book; `--no-score` turns it off.
+
 ## Revenue and profit, as shapes
 
 Two charts on Analytics, and one rule behind both: **a chart of zero is a lie.**

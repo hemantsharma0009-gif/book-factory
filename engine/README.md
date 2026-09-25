@@ -79,6 +79,52 @@ Every step is resumable: the plan, the art direction, each chapter and each
 generated image are on disk as they are produced. Losing power at chapter eleven
 costs you the chapter that was in flight and nothing else.
 
+## The scorecard
+
+The pipeline can write a book in twenty minutes. Reading one carefully takes
+about two hours, and that — not cost, not speed — is what stops a factory being
+a factory.
+
+So after the editorial pass, one call reads the finished manuscript and answers
+the question a publisher would:
+
+```
+──────────────────────────────────────────────────────────────────────────────
+FIX FIRST — publishable once the passages below are fixed   60/100
+Competent and unremarkable; the argument thins after chapter three.
+──────────────────────────────────────────────────────────────────────────────
+  opening       ██···  Opens on throat-clearing, not on the problem.
+  specificity   ████·  Chapters 2 and 5 carry real numbers; the rest assert.
+  voice         ███··  Slips into the hedging register after chapter six.
+
+  The 5 passages to look at, worst first:
+
+  1. Chapter 4 — Asserts importance without showing it.
+     "It is worth pausing on the mechanism, because the mechanism is the argument."
+     → Replace with the specific case this chapter is actually about.
+```
+
+Approval becomes "read the five flagged passages and the first chapter", which
+is fifteen minutes.
+
+**Every finding quotes the manuscript, and every quote is checked against it.**
+A model asked for evidence will sometimes produce a plausible sentence that is
+not in the book, and a confident citation of text that does not exist is worse
+than no citation — you would go looking for it. Anything that does not match is
+marked `! that sentence is not in the manuscript`, not quietly dropped: the
+fact that it was invented tells you how much to trust the rest of the page.
+
+**It can say no.** `do-not-publish` is a real verdict with a real threshold. A
+scorecard that always concludes "looks good" is worth nothing.
+
+**It is never a gate.** It cannot reject a book, block publishing or change a
+word. It only says where to look.
+
+About **$0.10** a book — one call over the whole manuscript, priced into the
+estimate before you spend anything. `--no-score` skips it. It runs on samples
+too, which is the point: `--sample 2 --live` is about six cents and tells you
+whether the prose is worth twelve chapters.
+
 ## What it costs
 
 Chapters are drafted through the **Batch API at 50% off**, and shared context —
@@ -309,7 +355,7 @@ src/server.js          review console (loopback only)
 ## Tests
 
 ```bash
-npm test                                   # 131 unit tests
+npm test                                   # 138 unit tests
 node test/console-ui.mjs                   # the progress panel, in a real browser
 node test/validate-epub.mjs <file.epub>    # structural EPUB validation
 ```

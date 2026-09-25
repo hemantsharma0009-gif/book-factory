@@ -34,6 +34,7 @@ import { draftChapters, draftChaptersLive } from "./agents/writer.js";
 import { editChapters, editChaptersLive } from "./agents/editor.js";
 import { writeListing } from "./agents/marketer.js";
 import { directArt } from "./agents/art-director.js";
+import { scoreManuscript, overallScore } from "./agents/critic.js";
 import { illustrate, illustrateCover, getProvider, assertUsable, DEFAULT_IMAGE_COST_USD } from "./illustrate/index.js";
 import { renderCover, renderPhotoCover } from "./cover.js";
 import { buildEpub } from "./epub.js";
@@ -73,11 +74,12 @@ const PARTIAL_WRITE_MS = 400;
 let lastPartialWrite = 0;
 
 /** Phases that will actually run, so the progress bar reaches 100%. */
-function phasesFor({ images, editorial }) {
+function phasesFor({ images, editorial, scorecard = true }) {
   const active = ["planning"];
   if (getProvider(images).needsDirection) active.push("briefing");
   active.push("drafting");
   if (editorial) active.push("editing");
+  if (scorecard) active.push("reviewing");
   if (images !== "none") active.push("illustrating");
   active.push("packaging");
   return active;
@@ -152,6 +154,7 @@ export async function produceBook(options = {}) {
     sample = 0,
     mode = "batch",
     editorial = true,
+    scorecard = true,
     /** Called with the book id the moment the run record exists, before the
      *  first API call. The console needs the id to start polling, and it
      *  should not have to guess it from the newest directory on disk. */
@@ -180,7 +183,7 @@ export async function produceBook(options = {}) {
       bookId: id,
       totalChapters: sample || chapterCount,
       wordsTarget: (sample || chapterCount) * wordsPerChapter,
-      activePhases: phasesFor({ images, editorial }),
+      activePhases: phasesFor({ images, editorial, scorecard }),
       meta: {
         mode,
         images,
@@ -189,6 +192,7 @@ export async function produceBook(options = {}) {
         author,
         sample,
         editorial,
+        scorecard,
         wordsPerChapter,
         chapterCount,
         genre: genre.id,
@@ -490,6 +494,38 @@ async function runPipeline({ bookId, log }) {
     const wordCount = written.reduce((sum, c) => sum + countWords(c.body), 0);
     await note(bookId, log, `Manuscript: ${wordCount.toLocaleString()} words`);
 
+    /* -------------------------------------------------- 4b. read it back */
+    // The listing is written after this, so the critic is told what the book
+    // promises using the plan rather than copy that does not exist yet.
+    let scorecard = await readJson(bookId, "scorecard.json");
+
+    if (run.scorecard !== false && !scorecard) {
+      await setPhase(bookId, "reviewing");
+      await note(bookId, log, "Reading it back…");
+      try {
+        scorecard = await scoreManuscript({
+          plan,
+          genre,
+          listing: { description: plan.premise },
+          chapters: written,
+          language,
+        });
+        await store.writeArtifact(bookId, "scorecard.json", JSON.stringify(scorecard, null, 2));
+        await syncCost();
+
+        const invented = scorecard.weakest.filter((f) => !f.verified).length;
+        await note(
+          bookId,
+          log,
+          `  ${scorecard.verdict} — ${scorecard.oneLine}` +
+            (invented ? ` (${invented} finding(s) quoted text not in the manuscript)` : ""),
+        );
+      } catch (err) {
+        // An opinion is not worth losing a book over.
+        await note(bookId, log, `  ! could not score the manuscript (${err.message})`);
+      }
+    }
+
     /* ---------------------------------------------------- 5. illustrate */
     let figures = new Map();
     let coverImage = null;
@@ -647,6 +683,16 @@ async function runPipeline({ bookId, log }) {
       epubFile: epubPath.split("/").pop(),
       epubBytes: epub.length,
       listing,
+      scorecard: scorecard
+        ? {
+            verdict: scorecard.verdict,
+            oneLine: scorecard.oneLine,
+            score: overallScore(scorecard),
+            scores: scorecard.scores,
+            weakest: scorecard.weakest,
+            strongest: scorecard.strongest,
+          }
+        : null,
       aiDisclosure,
       model: MODEL,
       cost,
