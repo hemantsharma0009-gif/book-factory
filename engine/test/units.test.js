@@ -30,7 +30,7 @@ import * as __art from "../src/illustrate/art.js";
 import * as __illustrate from "../src/illustrate/index.js";
 import { assertUsable } from "../src/illustrate/index.js";
 import { renderPhotoCover } from "../src/cover.js";
-import { disclosureFor, __test as __pipeline } from "../src/pipeline.js";
+import { disclosureFor, alsoByFor, __test as __pipeline } from "../src/pipeline.js";
 
 test("genre rotation never repeats within the cooldown window", () => {
   const history = [];
@@ -2021,4 +2021,73 @@ test("clearing a partial that was never there is not an error", async () => {
     delete process.env.BOOK_FACTORY_DATA;
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+/* ========================================================================
+ * Cross-promotion: the one page that can cause a sale rather than report one
+ * ====================================================================== */
+
+test("every book advertises the others, and a hostile link never ships", () => {
+  const state = {
+    books: [
+      { id: "bk_self", title: "This One" },
+      { id: "bk_a", title: "Book A", subtitle: "A sequel", published: { gumroad: { url: "https://gum.co/a" } } },
+      { id: "bk_b", title: "Book B" },
+      { id: "bk_evil", title: "Book Evil", published: { gumroad: { url: "javascript:alert(1)" } } },
+      { id: "bk_gone", title: "Rejected One", status: "rejected" },
+    ],
+  };
+
+  const list = alsoByFor(state, "bk_self");
+
+  assert.deepEqual(list.map((b) => b.title), ["Book A", "Book B", "Book Evil"], "self or rejected leaked in");
+  assert.equal(list[0].url, "https://gum.co/a");
+  assert.equal(list[1].url, "", "a book with no storefront is still named");
+
+  // This value is written into an href inside a file you publish and sell.
+  assert.equal(list[2].url, "", "a javascript: URL survived into a book");
+});
+
+test("the back matter is a real page, in the contents, in the book's language", async () => {
+  const epub = await buildEpub({
+    title: "पहली किताब",
+    author: "A",
+    language: "hi",
+    chapters: [{ number: 1, title: "एक", body: "शब्द।" }],
+    figures: new Map(),
+    alsoBy: [
+      { title: "Book Two", subtitle: "A sequel", url: "https://example.com/two" },
+      { title: "Book Three", subtitle: "", url: "" },
+    ],
+  });
+
+  const zip = await JSZip.loadAsync(epub);
+  const page = await zip.file("OEBPS/alsoby.xhtml").async("string");
+
+  assert.match(page, /इसी लेखक की अन्य पुस्तकें/, "heading was not translated");
+  assert.match(page, /<a href="https:\/\/example\.com\/two">Book Two<\/a>/);
+  assert.match(page, /<strong>Book Three<\/strong>/, "a book with no link must still be named");
+
+  const nav = await zip.file("OEBPS/nav.xhtml").async("string");
+  assert.match(nav, /alsoby\.xhtml/, "not reachable from the table of contents");
+
+  const opf = await zip.file("OEBPS/content.opf").async("string");
+  assert.match(opf, /idref="alsoby"/, "not in the reading order");
+});
+
+test("a book with nothing to advertise gets no empty page", async () => {
+  // A back-matter page reading "Also by this author" with nothing under it is
+  // worse than no page at all.
+  const epub = await buildEpub({
+    title: "Only Book",
+    author: "A",
+    language: "en",
+    chapters: [{ number: 1, title: "One", body: "Words." }],
+    figures: new Map(),
+    alsoBy: [],
+  });
+
+  const zip = await JSZip.loadAsync(epub);
+  assert.equal(zip.file("OEBPS/alsoby.xhtml"), null);
+  assert.doesNotMatch(await zip.file("OEBPS/nav.xhtml").async("string"), /alsoby/);
 });

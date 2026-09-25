@@ -459,6 +459,30 @@
     <div id="salesPreview" hidden></div>
   </div>
 
+  <div class="section card" id="moneyCharts">
+    <div class="toolbar" style="justify-content:space-between;align-items:flex-start">
+      <div>
+        <h2 style="margin:0">Revenue and profit</h2>
+        <p class="muted small" id="chartNote" style="margin:4px 0 0"></p>
+      </div>
+      <div class="chart-switch" role="group" aria-label="What the charts show">
+        <button type="button" data-chart-mode="earned" aria-pressed="true">Earned</button>
+        <button type="button" data-chart-mode="potential" aria-pressed="false">Per round of sales</button>
+      </div>
+    </div>
+
+    <div class="chart-grid" style="margin-top:16px">
+      <div>
+        <h3 class="small muted" style="margin:0 0 10px" id="donutHeading">Where it comes from</h3>
+        <div id="storeDonut"></div>
+      </div>
+      <div>
+        <h3 class="small muted" style="margin:0 0 10px" id="barsHeading">By title</h3>
+        <div id="titleBars"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="section card">
     <h2>Revenue</h2>
     <p class="muted small" id="revenueNote"></p>
@@ -520,6 +544,7 @@
 <div class="toasts" id="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
 
 <script src="assets/sales-parse.js"></script>
+<script src="assets/charts.js"></script>
 <script src="assets/app.js"></script>
 
 </body>

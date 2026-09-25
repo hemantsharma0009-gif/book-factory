@@ -83,6 +83,34 @@ function phasesFor({ images, editorial }) {
   return active;
 }
 
+/**
+ * The other books, for the back matter.
+ *
+ * A reader who finished this one is the likeliest buyer of the next, and this
+ * page is the only thing in the pipeline that can cause a sale rather than
+ * report one. It costs nothing to include.
+ *
+ * Only http(s) links survive: this value is written into an href inside a file
+ * that gets published, and a "javascript:" URL smuggled in through an imported
+ * catalogue would ship inside the book.
+ */
+const ALSO_BY_LIMIT = 12;
+
+export function alsoByFor(state, currentId) {
+  return (state.books || [])
+    .filter((other) => other.id !== currentId && other.title)
+    .filter((other) => other.status !== "rejected")
+    .slice(0, ALSO_BY_LIMIT)
+    .map((other) => {
+      const url = String(other.published?.gumroad?.url || other.storeUrl || "").trim();
+      return {
+        title: other.title,
+        subtitle: other.subtitle || "",
+        url: /^https?:\/\//i.test(url) ? url : "",
+      };
+    });
+}
+
 /* ------------------------------------------------------------- run helpers */
 
 async function setPhase(bookId, phase, fraction = 0) {
@@ -569,8 +597,11 @@ async function runPipeline({ bookId, log }) {
     const aiDisclosure = disclosureFor({ imagesGenerated });
     const uuid = randomUUID();
 
+    const catalogue = await store.load();
+
     const epub = await buildEpub({
       uuid,
+      alsoBy: alsoByFor(catalogue, bookId),
       title: plan.title,
       subtitle: plan.subtitle,
       author: run.author,

@@ -319,6 +319,41 @@ listing on a store the book is not on is worse than recording nothing.
 "Start" marks a job in progress and survives a reload, so a KDP upload waiting
 on review is visibly different from one you have not begun.
 
+## Revenue and profit, as shapes
+
+Two charts on Analytics, and one rule behind both: **a chart of zero is a lie.**
+With no sales imported, neither draws eleven flat bars — they say so and offer
+the other view.
+
+- **Where the money came from** — a ring split by storefront, with the total in
+  the middle and every slice carrying its own figure in the legend, so identity
+  is never colour alone. Three hues plus a neutral for "Other", validated for
+  colour-blind separation against both themes.
+- **Revenue and profit by title** — both measures on one shared dollar axis,
+  because a second axis would let the smaller number be drawn as the longer bar.
+
+An imported report's money column is the **royalty** — what the store actually
+paid, after its cut and after Amazon's delivery fee. So nothing here multiplies
+it by a royalty rate a second time. Profit is that money minus the recorded
+production cost; titles written before this engine have no recorded cost, and
+the note under the charts says so rather than implying they were free.
+
+Before any report exists there is still one honest number: **per round of
+sales** — what one copy of every listed title would pay. Real arithmetic from
+your own prices, not a forecast of demand, and the figure that says where the
+effort is worth spending.
+
+## Every book sells the others
+
+Each generated EPUB ends with **Also by this author**, listing the rest of the
+catalogue with storefront links where they are recorded. It is the only page in
+the whole pipeline that can cause a sale rather than report one, it costs
+nothing per book, and a rebuild refreshes it — so an older title picks up the
+books written since.
+
+Links are re-validated as `http(s)` on the way in: that value is written into an
+href inside a file you publish and sell.
+
 ## Real sales numbers, from the storefronts
 
 Until you import something, every figure on the Revenue table is one somebody

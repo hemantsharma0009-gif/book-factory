@@ -86,6 +86,9 @@ table.figure-data th[scope="row"] { text-align: left; }
 .title-page .subtitle { font-size: 1.1em; font-style: italic; color: #444; }
 .title-page .author { margin-top: 3em; font-size: 1em; letter-spacing: 0.1em; }
 .front-note { font-size: 0.85em; color: #555; margin-top: 4em; }
+ul.also-by { list-style: none; padding: 0; }
+ul.also-by li { margin: 0 0 1.1em; }
+.also-sub { font-size: 0.85em; color: #555; font-style: italic; }
 .draft-banner { font-size: 0.9em; letter-spacing: 0.12em; text-transform: uppercase; color: #8a4b00; border: 2px solid #8a4b00; padding: 0.5em; margin-bottom: 2em; text-align: center; }`;
 
 /**
@@ -118,19 +121,19 @@ ${body}
  * trusted blindly.
  */
 const LABELS = {
-  en: { cover: "Cover", contents: "Contents", chapter: "Chapter", titlePage: "Title page", begin: "Begin reading" },
-  hi: { cover: "आवरण", contents: "विषय-सूची", chapter: "अध्याय", titlePage: "शीर्षक पृष्ठ", begin: "पढ़ना शुरू करें" },
-  mr: { cover: "मुखपृष्ठ", contents: "अनुक्रमणिका", chapter: "प्रकरण", titlePage: "शीर्षक पृष्ठ", begin: "वाचन सुरू करा" },
-  bn: { cover: "প্রচ্ছদ", contents: "সূচিপত্র", chapter: "অধ্যায়", titlePage: "শিরোনাম পৃষ্ঠা", begin: "পড়া শুরু করুন" },
-  gu: { cover: "મુખપૃષ્ઠ", contents: "અનુક્રમણિકા", chapter: "પ્રકરણ", titlePage: "શીર્ષક પૃષ્ઠ", begin: "વાંચવાનું શરૂ કરો" },
-  ta: { cover: "அட்டை", contents: "பொருளடக்கம்", chapter: "அத்தியாயம்", titlePage: "தலைப்புப் பக்கம்", begin: "படிக்கத் தொடங்கு" },
-  te: { cover: "ముఖచిత్రం", contents: "విషయసూచిక", chapter: "అధ్యాయం", titlePage: "శీర్షిక పేజీ", begin: "చదవడం ప్రారంభించండి" },
-  ml: { cover: "പുറംചട്ട", contents: "ഉള്ളടക്കം", chapter: "അധ്യായം", titlePage: "ശീർഷക പേജ്", begin: "വായന തുടങ്ങുക" },
-  es: { cover: "Portada", contents: "Índice", chapter: "Capítulo", titlePage: "Portadilla", begin: "Empezar a leer" },
-  fr: { cover: "Couverture", contents: "Table des matières", chapter: "Chapitre", titlePage: "Page de titre", begin: "Commencer la lecture" },
-  de: { cover: "Umschlag", contents: "Inhalt", chapter: "Kapitel", titlePage: "Titelseite", begin: "Lesen beginnen" },
-  pt: { cover: "Capa", contents: "Sumário", chapter: "Capítulo", titlePage: "Folha de rosto", begin: "Começar a ler" },
-  ar: { cover: "الغلاف", contents: "المحتويات", chapter: "الفصل", titlePage: "صفحة العنوان", begin: "ابدأ القراءة" },
+  en: { cover: "Cover", contents: "Contents", chapter: "Chapter", titlePage: "Title page", begin: "Begin reading", alsoBy: "Also by this author" },
+  hi: { cover: "आवरण", contents: "विषय-सूची", chapter: "अध्याय", titlePage: "शीर्षक पृष्ठ", begin: "पढ़ना शुरू करें", alsoBy: "इसी लेखक की अन्य पुस्तकें" },
+  mr: { cover: "मुखपृष्ठ", contents: "अनुक्रमणिका", chapter: "प्रकरण", titlePage: "शीर्षक पृष्ठ", begin: "वाचन सुरू करा", alsoBy: "याच लेखकाची इतर पुस्तके" },
+  bn: { cover: "প্রচ্ছদ", contents: "সূচিপত্র", chapter: "অধ্যায়", titlePage: "শিরোনাম পৃষ্ঠা", begin: "পড়া শুরু করুন", alsoBy: "একই লেখকের অন্যান্য বই" },
+  gu: { cover: "મુખપૃષ્ઠ", contents: "અનુક્રમણિકા", chapter: "પ્રકરણ", titlePage: "શીર્ષક પૃષ્ઠ", begin: "વાંચવાનું શરૂ કરો", alsoBy: "આ જ લેખકનાં અન્ય પુસ્તકો" },
+  ta: { cover: "அட்டை", contents: "பொருளடக்கம்", chapter: "அத்தியாயம்", titlePage: "தலைப்புப் பக்கம்", begin: "படிக்கத் தொடங்கு", alsoBy: "இதே ஆசிரியரின் பிற நூல்கள்" },
+  te: { cover: "ముఖచిత్రం", contents: "విషయసూచిక", chapter: "అధ్యాయం", titlePage: "శీర్షిక పేజీ", begin: "చదవడం ప్రారంభించండి", alsoBy: "ఇదే రచయిత ఇతర పుస్తకాలు" },
+  ml: { cover: "പുറംചട്ട", contents: "ഉള്ളടക്കം", chapter: "അധ്യായം", titlePage: "ശീർഷക പേജ്", begin: "വായന തുടങ്ങുക", alsoBy: "ഇതേ എഴുത്തുകാരന്റെ മറ്റു പുസ്തകങ്ങൾ" },
+  es: { cover: "Portada", contents: "Índice", chapter: "Capítulo", titlePage: "Portadilla", begin: "Empezar a leer", alsoBy: "Del mismo autor" },
+  fr: { cover: "Couverture", contents: "Table des matières", chapter: "Chapitre", titlePage: "Page de titre", begin: "Commencer la lecture", alsoBy: "Du même auteur" },
+  de: { cover: "Umschlag", contents: "Inhalt", chapter: "Kapitel", titlePage: "Titelseite", begin: "Lesen beginnen", alsoBy: "Weitere Bücher dieses Autors" },
+  pt: { cover: "Capa", contents: "Sumário", chapter: "Capítulo", titlePage: "Folha de rosto", begin: "Começar a ler", alsoBy: "Do mesmo autor" },
+  ar: { cover: "الغلاف", contents: "المحتويات", chapter: "الفصل", titlePage: "صفحة العنوان", begin: "ابدأ القراءة", alsoBy: "لنفس المؤلف" },
 };
 
 /**
@@ -248,6 +251,49 @@ ${bodyHtml}
     spine.push(`<itemref idref="${id}"/>`);
   });
 
+  /**
+   * Back matter: the other books.
+   *
+   * A reader who finishes a book is the most likely buyer of the next one, and
+   * this is the only page in the whole pipeline that can actually cause a sale
+   * rather than just report one. It costs nothing per book and every
+   * self-published catalogue that sells relies on it.
+   *
+   * Titles with a storefront link become links; the rest are still listed,
+   * because a name a reader can search for is worth more than an omission.
+   */
+  let alsoByFile = null;
+  const alsoBy = (book.alsoBy || []).filter((other) => other && other.title);
+
+  if (alsoBy.length) {
+    const items = alsoBy
+      .map((other) => {
+        const name = other.url
+          ? `<a href="${esc(other.url)}">${esc(other.title)}</a>`
+          : `<strong>${esc(other.title)}</strong>`;
+        return `<li>${name}${other.subtitle ? `<br/><span class="also-sub">${esc(other.subtitle)}</span>` : ""}</li>`;
+      })
+      .join("\n");
+
+    alsoByFile = "alsoby.xhtml";
+    oebps.file(
+      alsoByFile,
+      xhtml(
+        label.alsoBy,
+        `<section epub:type="backmatter">
+<h1>${esc(label.alsoBy)}</h1>
+<ul class="also-by">
+${items}
+</ul>
+</section>`,
+        lang,
+        rtl,
+      ),
+    );
+    manifest.push('<item id="alsoby" href="alsoby.xhtml" media-type="application/xhtml+xml"/>');
+    spine.push('<itemref idref="alsoby"/>');
+  }
+
   // Navigation document (EPUB3 requirement).
   const navItems = book.chapters
     .map(
@@ -266,6 +312,7 @@ ${bodyHtml}
 <nav epub:type="toc" id="toc"><h1>${esc(label.contents)}</h1><ol>
 <li><a href="title.xhtml">${esc(label.titlePage)}</a></li>
 ${navItems}
+${alsoByFile ? `<li><a href="${alsoByFile}">${esc(label.alsoBy)}</a></li>` : ""}
 </ol></nav>
 <nav epub:type="landmarks" hidden="hidden"><ol>
 <li><a epub:type="bodymatter" href="chap001.xhtml">${esc(label.begin)}</a></li>
