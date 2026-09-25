@@ -20,7 +20,7 @@ import * as store from "./store.js";
 import { buildEpub } from "./epub.js";
 import { renderCover, renderPhotoCover } from "./cover.js";
 import { languageById } from "./config.js";
-import { AI_DISCLOSURE } from "./pipeline.js";
+import { AI_DISCLOSURE, alsoByFor } from "./pipeline.js";
 
 /**
  * Splits the manuscript back into chapters.
@@ -199,6 +199,9 @@ export async function rebuildBook({ id, log = () => {} }) {
 
   const epub = await buildEpub({
     uuid: book.uuid,
+    // Rebuilt from the current catalogue, so a book gains the titles written
+    // since it was made rather than being frozen with the list it shipped with.
+    alsoBy: alsoByFor(state, id),
     title: book.title,
     subtitle: book.subtitle,
     author: book.author,

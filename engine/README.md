@@ -309,7 +309,7 @@ src/server.js          review console (loopback only)
 ## Tests
 
 ```bash
-npm test                                   # 128 unit tests
+npm test                                   # 131 unit tests
 node test/console-ui.mjs                   # the progress panel, in a real browser
 node test/validate-epub.mjs <file.epub>    # structural EPUB validation
 ```

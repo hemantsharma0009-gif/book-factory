@@ -1855,6 +1855,7 @@ function renderAnalytics() {
 
   renderGapChecklist(gaps, usedStores, live);
 
+  renderMoneyCharts(books, live);
   renderListingMatrix(books);
   renderPricing(books);
   renderDrill();
@@ -1890,6 +1891,169 @@ function renderAnalytics() {
             "</tr>";
         }).join("")
     : emptyRow(6, "No titles yet.");
+}
+
+/* ------------------------------------------------------------------ charts */
+
+/**
+ * What the two charts are of, and the one thing that makes them honest.
+ *
+ * An imported sales report's money column is the ROYALTY - what the store
+ * actually paid you, after its cut and, on Amazon, after delivery fees. The
+ * parser prefers "Royalty" and "Earnings" over anything price-shaped for
+ * exactly this reason. So revenue here is never multiplied by a royalty rate
+ * again: doing that would halve a number that has already been halved, which
+ * is the same class of mistake as counting cached tokens as free.
+ *
+ * Profit is that money minus what the book cost to produce. Titles written
+ * before this engine existed have no recorded cost, so for them profit and
+ * revenue are the same figure and the note under the charts says so rather
+ * than implying the production was free.
+ */
+var CHART_COLORS = {
+  amazon: "--series-1",
+  gumroad: "--series-2",
+  play: "--series-3",
+  other: "--series-other"
+};
+
+var chartMode = null;
+
+function storeColor(storeId) {
+  var name = CHART_COLORS[storeId] || "--series-other";
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#6b7a99";
+}
+
+function productionCost(book) {
+  return Math.max(0, toNum(book.productionCostUsd, 0));
+}
+
+/** Earned, per storefront, from imported or hand-entered sales. */
+function earnedByStore(books) {
+  var totals = Object.create(null);
+  books.forEach(function (book) {
+    (book.sales || []).forEach(function (row) {
+      if (row.currency !== "USD" || !row.amount) return;
+      var id = ROYALTY[row.source] ? row.source : "other";
+      totals[id] = (totals[id] || 0) + row.amount;
+    });
+  });
+  return totals;
+}
+
+/**
+ * What one copy of every listed title would pay, per storefront.
+ *
+ * Not a forecast and not labelled as one - it is the arithmetic the gaps
+ * checklist already uses, shown as a shape. It is the only money figure
+ * available before a single report has been imported, and it is the one that
+ * says where the effort is worth spending.
+ */
+function potentialByStore(live) {
+  var totals = Object.create(null);
+  live.forEach(function (book) {
+    liveStores(book).forEach(function (store) {
+      var price = priceFor(book, store.id);
+      if (!price) return;
+      totals[store.id] = (totals[store.id] || 0) + netPerSale(store.id, price).net;
+    });
+  });
+  return totals;
+}
+
+function potentialForBook(book) {
+  return liveStores(book).reduce(function (sum, store) {
+    var price = priceFor(book, store.id);
+    return price ? sum + netPerSale(store.id, price).net : sum;
+  }, 0);
+}
+
+function renderMoneyCharts(books, live) {
+  if (!global_charts()) return;
+
+  var earned = earnedByStore(books);
+  var anyEarned = Object.keys(earned).some(function (k) { return earned[k] > 0.005; });
+
+  // Default to whichever view has something in it, but never override a
+  // choice already made by hand.
+  if (chartMode === null) chartMode = anyEarned ? "earned" : "potential";
+
+  var buttons = document.querySelectorAll("[data-chart-mode]");
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].setAttribute("aria-pressed", String(buttons[i].dataset.chartMode === chartMode));
+  }
+
+  var potential = chartMode === "potential";
+  var totals = potential ? potentialByStore(live) : earned;
+
+  var slices = STORES.map(function (store) {
+    return { label: store.label, value: totals[store.id] || 0, color: storeColor(store.id) };
+  });
+
+  $("donutHeading").textContent = potential ? "What one round of sales pays" : "Where the money came from";
+  $("barsHeading").textContent = potential ? "Per title, per round of sales" : "Revenue and profit by title";
+
+  window.BookFactoryCharts.donut($("storeDonut"), {
+    slices: slices,
+    totalLabel: potential ? "per round" : "received",
+    label: potential ? "Potential per storefront" : "Revenue by storefront",
+    empty: potential
+      ? "No titles are listed anywhere yet, so there is nothing to earn from."
+      : "No sales imported yet. Switch to “Per round of sales” to see what the catalogue is worth."
+  });
+
+  var rows;
+  var series;
+
+  if (potential) {
+    series = [{ key: "net", label: "Net per round of sales", color: storeColor("amazon") }];
+    rows = live.map(function (book) {
+      return {
+        label: book.title,
+        values: [{ label: "Net per round", value: potentialForBook(book), color: storeColor("amazon") }]
+      };
+    });
+  } else {
+    var profitColor = getComputedStyle(document.documentElement).getPropertyValue("--series-3").trim() || "#199e70";
+    series = [
+      { key: "revenue", label: "Paid by the storefront", color: storeColor("amazon") },
+      { key: "profit", label: "After production cost", color: profitColor }
+    ];
+    rows = books.map(function (book) {
+      var revenue = Math.max(0, usdRevenue(book));
+      return {
+        label: book.title,
+        values: [
+          { label: "Paid by the storefront", value: revenue, color: storeColor("amazon") },
+          { label: "After production cost", value: Math.max(0, revenue - productionCost(book)), color: profitColor }
+        ]
+      };
+    });
+  }
+
+  rows.sort(function (a, b) { return b.values[0].value - a.values[0].value; });
+
+  window.BookFactoryCharts.bars($("titleBars"), {
+    rows: rows,
+    series: series,
+    empty: potential
+      ? "Nothing is listed for sale yet."
+      : "No sales imported yet — every bar would be zero, so none is drawn."
+  });
+
+  var priced = live.filter(function (b) { return productionCost(b) > 0; }).length;
+  $("chartNote").textContent = potential
+    ? "What the catalogue pays if one copy of every listed title sells, after each store's cut. " +
+      "Real arithmetic from your prices — not a forecast of demand."
+    : "Money the storefronts actually paid you, after their cut. " +
+      (priced
+        ? priced + " title(s) have a recorded production cost, so their profit is lower than their revenue."
+        : "No title has a recorded production cost yet, so profit and revenue are the same figure here.");
+}
+
+/** The chart module is a separate file; fail quietly rather than break the page. */
+function global_charts() {
+  return window.BookFactoryCharts && typeof window.BookFactoryCharts.donut === "function";
 }
 
 /** "from Amazon / KDP", "from 2 storefronts", or "entered by hand". */
@@ -3789,6 +3953,14 @@ var ACTIONS = {
 document.addEventListener("click", function (event) {
   var node = event.target;
   if (!node || typeof node.closest !== "function") return;
+
+  var mode = node.closest("[data-chart-mode]");
+  if (mode) {
+    event.preventDefault();
+    chartMode = mode.dataset.chartMode;
+    renderAnalytics();
+    return;
+  }
 
   var drill = node.closest("[data-drill]");
   if (drill) {

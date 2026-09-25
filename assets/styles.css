@@ -815,3 +815,81 @@ button.bars-row[aria-pressed="true"] .bars-fill { background: var(--violet); }
   .page { display: block !important; }
   body { background: #fff; color: #000; }
 }
+
+/* ---------- Charts ---------- */
+
+/*
+ * The categorical slots, validated for colour-blind separation against this
+ * page's own surfaces in both themes (three hues plus a neutral for "Other" —
+ * three is the cap for a form where any two marks get compared, and a pie is
+ * exactly that). Dark is the default here because the page is.
+ */
+:root {
+  --series-1: #3987e5;   /* Amazon / KDP */
+  --series-2: #d95926;   /* Gumroad */
+  --series-3: #199e70;   /* Google Play Books */
+  --series-other: #6b7a99;
+  --chart-surface: var(--panel);
+}
+:root[data-theme="light"] {
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-other: #8592b0;
+}
+
+.chart-grid { display: grid; gap: 18px; grid-template-columns: minmax(260px, 340px) 1fr; align-items: start; }
+@media (max-width: 860px) { .chart-grid { grid-template-columns: 1fr; } }
+
+.chart-donut { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.chart-donut svg { display: block; }
+/* Segments are separated by a ring of surface colour, so two adjacent hues are
+   never judged directly against each other. */
+.chart-donut circle { stroke-linecap: butt; transition: opacity .15s ease; outline: none; }
+.chart-donut circle:hover, .chart-donut circle:focus-visible { opacity: .82; }
+.chart-donut circle:focus-visible { stroke-width: 30; }
+
+/* Text wears text tokens, never a series colour. */
+/* The centre label is decoration sitting on top of the ring. Without this it
+   swallows pointer events aimed at the segment behind it. */
+.chart-hero, .chart-hero-sub { pointer-events: none; }
+.chart-hero { fill: var(--text); font-size: 26px; font-weight: 800; font-family: inherit; }
+.chart-hero-sub { fill: var(--muted); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; font-family: inherit; }
+
+.chart-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; width: 100%; }
+.chart-legend li { display: flex; align-items: center; gap: 9px; font-size: 12px; }
+.chart-legend-inline { flex-direction: row; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; }
+.chart-swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+.chart-legend-name { color: var(--text-dim); }
+.chart-legend-value { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.chart-bar-rows { display: flex; flex-direction: column; gap: 8px; }
+.chart-bar-row { display: grid; grid-template-columns: minmax(96px, 200px) 1fr auto; gap: 12px; align-items: center; }
+.chart-bar-label { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 2px of surface between the two bars in a row, same rule as the donut. */
+.chart-bar-track { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.chart-bar { display: block; height: 9px; border-radius: 0 4px 4px 0; min-width: 2px; outline: none; transition: opacity .15s ease; }
+.chart-bar:hover, .chart-bar:focus-visible { opacity: .82; }
+.chart-bar:focus-visible { box-shadow: var(--focus); }
+.chart-bar-value { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; min-width: 64px; text-align: right; }
+
+.chart-empty { color: var(--muted); font-size: 12.5px; margin: 0; padding: 22px 0; text-align: center; }
+
+.chart-tip {
+  position: fixed; top: 0; left: 0; z-index: 400; pointer-events: none;
+  background: var(--panel-3); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 11px; box-shadow: var(--shadow-soft);
+  font-size: 12px; max-width: 260px;
+}
+.chart-tip-title { font-weight: 700; color: var(--text); margin-bottom: 3px; }
+.chart-tip-row { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+.chart-switch { display: flex; gap: 6px; flex-wrap: wrap; }
+.chart-switch button { font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text-dim); cursor: pointer; }
+.chart-switch button:hover { background: var(--panel-3); }
+.chart-switch button[aria-pressed="true"] { border-color: var(--blue); color: var(--text); background: var(--panel-3); }
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-donut circle, .chart-bar { transition: none; }
+}
